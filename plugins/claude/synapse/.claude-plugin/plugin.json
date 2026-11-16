@@ -1,0 +1,6 @@
+{
+  "name": "synapse",
+  "version": "0.1.0",
+  "description": "Local-first project memory for Claude Code (MCP server + lifecycle hooks + memory skill).",
+  "license": "MIT"
+}

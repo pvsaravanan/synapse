@@ -1,0 +1,45 @@
+{
+  "name": "synapse-memory",
+  "version": "0.1.0",
+  "description": "Local-first, project-aware memory layer for AI coding agents over MCP.",
+  "type": "module",
+  "bin": {
+    "synapse": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "plugins",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "dev": "tsc -p tsconfig.json --watch",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "start": "node dist/cli.js serve"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pvsaravanan/synapse.git"
+  },
+  "homepage": "https://github.com/pvsaravanan/synapse#readme",
+  "bugs": {
+    "url": "https://github.com/pvsaravanan/synapse/issues"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0"
+  }
+}

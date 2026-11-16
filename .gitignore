@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.db
+*.db-wal
+*.db-shm
+
+# Claude Code local session data (private)
+.claude/
+.DS_Store

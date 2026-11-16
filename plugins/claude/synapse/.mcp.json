@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "synapse": { "command": "synapse", "args": ["serve"] }
+  }
+}

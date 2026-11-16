@@ -1,0 +1,265 @@
+#!/usr/bin/env node
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
+
+const [major, minor] = process.versions.node.split('.').map(Number);
+if (major < 22 || (major === 22 && minor < 13)) {
+  process.stderr.write(`synapse requires Node.js >= 22.13 (built-in node:sqlite); found ${process.version}\n`);
+  process.exit(process.argv[2] === 'hook' ? 0 : 1);
+}
+
+const HELP = `synapse — local-first project memory for AI coding agents
+
+Usage: synapse <command> [options]
+
+  serve [--mode lite|full]        Start the stdio MCP server
+  hook                            Handle a Claude Code hook event (JSON on stdin)
+  context [--task "..."]          Print the task-lensed project brief
+  search <query> [--global] [--limit N] [--type T]
+  store --type T --entity E --title "..." --narrative "..." [--topic K] [--facts a,b] [--files a,b]
+  detail <id...>                  Show full memories
+  timeline <id>                   Show memories around an id
+  resolve <id...> [--status resolved|archived|active]
+  ingest-git [--count N] [--since DATE]
+  session start|end [--summary "..."]
+  retention [--archive]           Memory health and archiving
+  stats | projects                Counts for this project / all projects
+  export [--out FILE]             Export this project's memories as JSON
+  import <file> [--project ID]    Import an export bundle
+  setup claude [--global] [--dry-run]   Register MCP server + hooks with Claude Code
+  doctor                          Diagnose environment
+
+Env: SYNAPSE_HOME (default ~/.synapse), SYNAPSE_DB, SYNAPSE_MODE, SYNAPSE_HOOK_INJECT=full|minimal|silent
+`;
+
+async function main(): Promise<void> {
+  const [cmd, ...rest] = process.argv.slice(2);
+  const { values: v, positionals: pos } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    strict: false,
+    options: {
+      mode: { type: 'string' }, task: { type: 'string' }, global: { type: 'boolean' }, limit: { type: 'string' },
+      type: { type: 'string' }, entity: { type: 'string' }, title: { type: 'string' }, narrative: { type: 'string' },
+      topic: { type: 'string' }, facts: { type: 'string' }, files: { type: 'string' }, status: { type: 'string' },
+      count: { type: 'string' }, since: { type: 'string' }, summary: { type: 'string' }, archive: { type: 'boolean' },
+      out: { type: 'string' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+    },
+  });
+  const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : undefined);
+  const list = (k: string) => str(k)?.split(',').map((s) => s.trim()).filter(Boolean);
+
+  if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h' || v.help) {
+    process.stdout.write(HELP);
+    return;
+  }
+  if (cmd === '--version' || cmd === 'version') {
+    const { VERSION } = await import('./config.js');
+    console.log(VERSION);
+    return;
+  }
+
+  if (cmd === 'serve') {
+    const { serveStdio } = await import('./server.js');
+    const { toolMode } = await import('./config.js');
+    await serveStdio(toolMode(str('mode')));
+    return;
+  }
+
+  if (cmd === 'hook') {
+    try {
+      const { readStdin, handleHook } = await import('./hooks.js');
+      const { getDb } = await import('./db.js');
+      const raw = await readStdin();
+      if (!raw.trim()) return;
+      const out = handleHook(getDb(), JSON.parse(raw));
+      if (out.stdout) process.stdout.write(out.stdout);
+    } catch (e) {
+      if (process.env.SYNAPSE_DEBUG) process.stderr.write(`[synapse hook] ${(e as Error).stack}\n`);
+    }
+    return;
+  }
+
+  if (cmd === 'setup') return setup(pos[0], Boolean(v.global), Boolean(v['dry-run']));
+  if (cmd === 'doctor') return doctor();
+
+  const { getDb } = await import('./db.js');
+  const { detectProject } = await import('./project.js');
+  const db = getDb();
+  const project = detectProject(process.cwd());
+  const store = await import('./store.js');
+  const disc = await import('./disclosure.js');
+
+  switch (cmd) {
+    case 'context': {
+      const { buildProjectContext } = await import('./context.js');
+      console.log(buildProjectContext(db, project, str('task') ?? pos.join(' ')).text);
+      break;
+    }
+    case 'search': {
+      const { search } = await import('./search.js');
+      const hits = search(db, {
+        query: pos.join(' '),
+        projectId: v.global ? undefined : project.id,
+        limit: Number(str('limit') ?? 10),
+        type: list('type') as never,
+        status: (str('status') as never) ?? 'active',
+      });
+      console.log(hits.length ? disc.formatIndex(hits, { query: pos.join(' '), global: Boolean(v.global) }) : 'No matching memories.');
+      break;
+    }
+    case 'store': {
+      const { OBSERVATION_TYPES } = await import('./types.js');
+      const type = str('type') ?? 'discovery';
+      if (!(OBSERVATION_TYPES as readonly string[]).includes(type)) throw new Error(`--type must be one of ${OBSERVATION_TYPES.join(', ')}`);
+      if (!str('title')) throw new Error('--title is required');
+      const r = store.storeObservation(db, {
+        projectId: project.id,
+        entityName: str('entity') ?? 'project',
+        type: type as never,
+        title: str('title')!,
+        narrative: str('narrative') ?? '',
+        facts: list('facts'),
+        filesModified: list('files'),
+        topicKey: str('topic'),
+        source: 'manual',
+      });
+      console.log(`${r.action}: ${disc.indexLine(r.observation)}`);
+      break;
+    }
+    case 'detail': {
+      const obs = store.getObservations(db, pos.map(Number));
+      console.log(obs.length ? obs.map(disc.formatDetail).join('\n\n---\n\n') : 'Not found.');
+      break;
+    }
+    case 'timeline':
+      console.log(disc.formatTimeline(store.timeline(db, Number(pos[0]))));
+      break;
+    case 'resolve': {
+      const n = store.setStatus(db, pos.map(Number), (str('status') as never) ?? 'resolved', project.id);
+      console.log(`Updated ${n}.`);
+      break;
+    }
+    case 'ingest-git': {
+      const { ingestCommits } = await import('./git.js');
+      const r = ingestCommits(db, project.id, project.rootPath, { count: Number(str('count') ?? 20), since: str('since') });
+      console.log(`Ingested ${r.ingested} (skipped ${r.skippedExisting} existing, ${r.skippedNoise} noise).`);
+      break;
+    }
+    case 'session': {
+      const s = await import('./sessions.js');
+      if (pos[0] === 'start') console.log(s.startSession(db, project.id, { agent: 'cli' }).id);
+      else if (pos[0] === 'end') {
+        const a = s.activeSession(db, project.id);
+        if (!a) console.log('No active session.');
+        else console.log(`Closed ${s.endSession(db, a.id, str('summary'))?.id}`);
+      } else console.log(s.recentSessions(db, project.id, 10, false).map((x) => `${x.startedAt.slice(0, 16)} ${x.status} ${x.agent ?? ''} ${x.summary ?? ''}`).join('\n') || 'No sessions.');
+      break;
+    }
+    case 'retention': {
+      const m = await import('./maintenance.js');
+      const rep = m.retentionReport(db, project.id);
+      console.log(`Zones: active ${rep.zones.active}, stale ${rep.zones.stale}, archive-candidate ${rep.zones['archive-candidate']}`);
+      if (v.archive) console.log(`Archived ${m.archiveExpired(db, project.id).length}.`);
+      break;
+    }
+    case 'stats':
+      console.log(`Project: ${project.id} (${project.rootPath})`);
+      console.log(JSON.stringify(store.projectStats(db, project.id), null, 2));
+      break;
+    case 'projects':
+      for (const p of store.listProjects(db)) console.log(`${p.projectId}\t${p.count}\t${p.lastActivity}`);
+      break;
+    case 'export': {
+      const { exportProject } = await import('./maintenance.js');
+      const out = JSON.stringify(exportProject(db, project.id), null, 2);
+      if (str('out')) writeFileSync(str('out')!, out);
+      else console.log(out);
+      break;
+    }
+    case 'import': {
+      const { importBundle } = await import('./maintenance.js');
+      const r = importBundle(db, JSON.parse(readFileSync(pos[0], 'utf8')), str('project') ?? project.id);
+      console.log(`Imported ${r.imported}, merged ${r.merged}.`);
+      break;
+    }
+    default:
+      process.stderr.write(`Unknown command: ${cmd}\n\n${HELP}`);
+      process.exitCode = 1;
+  }
+}
+
+function selfCommand(): { node: string; script: string } {
+  return { node: process.execPath, script: fileURLToPath(import.meta.url) };
+}
+
+const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreCompact', 'SessionEnd'];
+
+function setup(agent: string | undefined, global: boolean, dryRun: boolean): void {
+  if (agent !== 'claude') {
+    console.error('Usage: synapse setup claude [--global] [--dry-run]');
+    process.exitCode = 1;
+    return;
+  }
+  const { node, script } = selfCommand();
+  const hookCmd = `"${node}" "${script}" hook`;
+  const settingsPath = global ? path.join(os.homedir(), '.claude', 'settings.json') : path.join(process.cwd(), '.claude', 'settings.local.json');
+
+  let settings: Record<string, any> = {};
+  if (existsSync(settingsPath)) settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  settings.hooks ??= {};
+  for (const ev of HOOK_EVENTS) {
+    const groups: any[] = (settings.hooks[ev] ??= []);
+    const already = groups.some((g) => (g.hooks ?? []).some((h: any) => typeof h.command === 'string' && /synapse|cli\.js" hook$/.test(h.command) && h.command.endsWith(' hook')));
+    if (!already) groups.push({ hooks: [{ type: 'command', command: hookCmd, timeout: 10 }] });
+  }
+
+  const mcpArgs = ['mcp', 'add', 'synapse', '-s', global ? 'user' : 'local', '--', node, script, 'serve'];
+  if (dryRun) {
+    console.log(`Would write hooks to ${settingsPath}:\n${JSON.stringify(settings.hooks, null, 2)}`);
+    console.log(`Would run: claude ${mcpArgs.join(' ')}`);
+    return;
+  }
+  mkdirSync(path.dirname(settingsPath), { recursive: true });
+  if (existsSync(settingsPath)) copyFileSync(settingsPath, `${settingsPath}.synapse-backup`);
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  console.log(`Hooks written to ${settingsPath}${existsSync(`${settingsPath}.synapse-backup`) ? ' (backup: .synapse-backup)' : ''}`);
+  try {
+    execFileSync('claude', mcpArgs, { stdio: 'inherit' });
+  } catch {
+    console.log(`Could not run the claude CLI. Register the MCP server manually:\n  claude ${mcpArgs.map((a) => (a.includes(' ') ? `"${a}"` : a)).join(' ')}`);
+  }
+}
+
+async function doctor(): Promise<void> {
+  const { databasePath } = await import('./config.js');
+  const ok = (b: boolean) => (b ? 'ok ' : 'FAIL');
+  console.log(`${ok(true)} node ${process.version} (${process.execPath})`);
+  try {
+    const { openDatabase } = await import('./db.js');
+    const db = openDatabase(':memory:');
+    db.prepare("SELECT * FROM observations_fts WHERE observations_fts MATCH 'x'").all();
+    console.log(`${ok(true)} node:sqlite + FTS5`);
+  } catch (e) {
+    console.log(`${ok(false)} node:sqlite/FTS5: ${(e as Error).message}`);
+  }
+  console.log(`     database: ${databasePath()} ${existsSync(databasePath()) ? '' : '(not created yet)'}`);
+  const { detectProject } = await import('./project.js');
+  const p = detectProject(process.cwd());
+  console.log(`${ok(true)} project: ${p.id} @ ${p.rootPath}`);
+  try {
+    execFileSync('git', ['--version'], { stdio: 'ignore' });
+    console.log(`${ok(true)} git available`);
+  } catch {
+    console.log(`${ok(false)} git not found (git memory disabled)`);
+  }
+}
+
+main().catch((e) => {
+  process.stderr.write(`synapse: ${(e as Error).message}\n`);
+  process.exitCode = 1;
+});

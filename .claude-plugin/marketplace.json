@@ -1,0 +1,11 @@
+{
+  "name": "synapse",
+  "owner": { "name": "Synapse" },
+  "plugins": [
+    {
+      "name": "synapse",
+      "source": "./plugins/claude/synapse",
+      "description": "Local-first project memory for Claude Code: MCP tools, session-start briefs and filtered auto-capture hooks."
+    }
+  ]
+}
