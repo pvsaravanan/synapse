@@ -8,6 +8,6 @@ Synapse is a local-first memory layer for AI coding agents. It gives an agent a 
 | [Concepts](concepts.md) | Memory model, projects, search, retention, the context brief |
 | [MCP tools](mcp-tools.md) | Every tool, its parameters and when to use it |
 | [CLI](cli.md) | Every command and option |
-| [Agent integration](agents.md) | Claude Code, Cursor and Codex setup, hooks, auto-capture, other MCP clients, troubleshooting |
+| [Agent integration](agents.md) | Claude Code, Cursor, Codex and Devin CLI setup, hooks, auto-capture, other MCP clients, troubleshooting |
 | [Configuration](configuration.md) | Environment variables, storage, tool modes |
 | [Architecture](architecture.md) | Modules, database schema, design decisions, contributing |

@@ -1,6 +1,6 @@
 /**
  * `synapse setup <agent>` — register the MCP server and lifecycle hooks with
- * Claude Code, Cursor or Codex. Every write merges into existing config,
+ * Claude Code, Cursor, Codex or Devin CLI. Every write merges into existing config,
  * backs the file up first, and is idempotent. Commands use absolute paths to
  * the running Node binary and CLI so they work even when the shell's default
  * `node` is too old for node:sqlite.
@@ -20,6 +20,8 @@ export interface SetupOptions {
   script: string;
   /** Run the agent's own CLI (claude mcp add). Disabled in tests. */
   useAgentCli?: boolean;
+  /** Devin: pre-approve Synapse's MCP tools (permissions.allow "mcp__synapse__*"). Opt-in. */
+  allowTools?: boolean;
 }
 
 export interface SetupReport {
@@ -105,6 +107,8 @@ export function setupClaude(o: SetupOptions): SetupReport {
       else report.notes.push(`Could not run the claude CLI. Register the MCP server manually:\n  ${manual}`);
     }
   }
+  const devinDupes = [...devinHookFiles(o, 'user'), ...(o.global ? [] : devinHookFiles(o, 'project'))].filter(([f, k]) => fileHasSynapseHooks(f, k)).map(([f]) => f);
+  if (devinDupes.length) report.notes.push(`Devin CLI imports these Claude hooks and also has Synapse hooks in ${devinDupes.join(', ')}; remove those or Devin runs every event twice.`);
   report.notes.push('Restart Claude Code to load the tools and hooks.');
   return report;
 }
@@ -188,8 +192,118 @@ export function setupCodex(o: SetupOptions): SetupReport {
   return report;
 }
 
+// ── Devin CLI ────────────────────────────────────────────────────────────
+
+const DEVIN_ALLOW_RULE = 'mcp__synapse__*';
+
+const DEVIN_EVENTS: Record<string, number> = { SessionStart: 10, UserPromptSubmit: 10, PostToolUse: 10, PostCompaction: 10, SessionEnd: 10 };
+
+/** Does a hooks object (event -> matcher groups) contain a synapse hook? */
+function hasSynapseHooks(hooks: unknown): boolean {
+  if (!hooks || typeof hooks !== 'object') return false;
+  return Object.values(hooks as Record<string, unknown>).some(
+    (groups) => Array.isArray(groups) && groups.some((g: any) => (g?.hooks ?? []).some((h: any) => isSynapseHookCommand(h?.command))),
+  );
+}
+
+function fileHasSynapseHooks(file: string, key: 'hooks' | null): boolean {
+  try {
+    const data = readJson(file);
+    return hasSynapseHooks(key ? data[key] : data);
+  } catch {
+    return false;
+  }
+}
+
+/** Claude Code hook files that Devin CLI imports (read_config_from.claude, on by default). */
+function claudeFilesDevinImports(o: SetupOptions, scope: 'project' | 'user'): string[] {
+  if (scope === 'user') return [path.join(o.home, '.claude.json'), path.join(o.home, '.claude', 'settings.json'), path.join(o.home, '.claude', 'settings.local.json')];
+  const root = projectRoot(o);
+  return [path.join(root, '.claude', 'settings.json'), path.join(root, '.claude', 'settings.local.json')];
+}
+
+/** Devin CLI's own hook files: project hooks.v1.json is the bare hooks object; config files use a "hooks" key. */
+function devinHookFiles(o: SetupOptions, scope: 'project' | 'user'): [string, 'hooks' | null][] {
+  if (scope === 'user') return [[path.join(o.home, '.config', 'devin', 'config.json'), 'hooks']];
+  const d = path.join(projectRoot(o), '.devin');
+  return [[path.join(d, 'hooks.v1.json'), null], [path.join(d, 'config.json'), 'hooks'], [path.join(d, 'config.local.json'), 'hooks']];
+}
+
+export function setupDevin(o: SetupOptions): SetupReport {
+  const report: SetupReport = { agent: 'devin', changes: [], notes: [] };
+  const scope = o.global ? 'user' : 'project';
+
+  // Hooks — avoid double firing: Devin already runs Claude Code's synapse hooks (user-level ones in every project).
+  const importedFrom = [...claudeFilesDevinImports(o, 'user'), ...(o.global ? [] : claudeFilesDevinImports(o, 'project'))]
+    .filter((f) => fileHasSynapseHooks(f, 'hooks'));
+  const ownFiles = [...devinHookFiles(o, 'user'), ...(o.global ? [] : devinHookFiles(o, 'project'))];
+  const existingDevin = ownFiles.filter(([f, k]) => fileHasSynapseHooks(f, k)).map(([f]) => f);
+  if (importedFrom.length) {
+    report.changes.push(`hooks: not added — Devin CLI already imports Synapse's Claude Code hooks from ${importedFrom.join(', ')}`);
+    if (existingDevin.length) report.notes.push(`Synapse hooks also exist in ${existingDevin.join(', ')}; remove them there, or every event runs twice.`);
+  } else if (existingDevin.length) {
+    report.changes.push(`hooks: already present (${existingDevin.join(', ')})`);
+  } else if (o.global) {
+    const file = path.join(o.home, '.config', 'devin', 'config.json');
+    const config = readJson(file);
+    mergeNestedHooks(config, DEVIN_EVENTS, hookCommand(o, 'devin'));
+    writeFile(file, JSON.stringify(config, null, 2) + '\n', o, report, 'hooks');
+  } else {
+    const file = path.join(projectRoot(o), '.devin', 'hooks.v1.json');
+    const wrapper = { hooks: readJson(file) };
+    mergeNestedHooks(wrapper, DEVIN_EVENTS, hookCommand(o, 'devin'));
+    writeFile(file, JSON.stringify(wrapper.hooks, null, 2) + '\n', o, report, 'hooks');
+  }
+
+  // MCP — local scope: .devin/mcp_config.local.json (not committed); user scope: ~/.config/devin/mcp_config.json.
+  // Prefer `devin mcp add` (Devin owns its schema); fall back to writing the file.
+  const scopeFlag = o.global ? 'user' : 'local';
+  const envArgs = o.global ? [] : ['-e', `SYNAPSE_PROJECT_ROOT=${projectRoot(o)}`];
+  const mcpArgs = ['mcp', 'add', 'synapse', '-s', scopeFlag, ...envArgs, '--', o.node, o.script, 'serve'];
+  let registered = false;
+  if (!o.dryRun && o.useAgentCli) {
+    try {
+      // Replace any previous registration so paths stay current.
+      try { execFileSync('devin', ['mcp', 'remove', 'synapse', '-s', scopeFlag], { stdio: 'pipe', cwd: projectRoot(o) }); } catch { /* not registered */ }
+      execFileSync('devin', mcpArgs, { stdio: 'pipe', cwd: projectRoot(o) });
+      report.changes.push(`mcp: registered with "devin mcp add" (${scopeFlag} scope)`);
+      registered = true;
+    } catch {
+      /* devin CLI missing or rejected the call: write the file instead */
+    }
+  }
+  if (!registered) {
+    const mcpFile = o.global ? path.join(o.home, '.config', 'devin', 'mcp_config.json') : path.join(projectRoot(o), '.devin', 'mcp_config.local.json');
+    const mcp = readJson(mcpFile);
+    mcp.mcpServers ??= {};
+    mcp.mcpServers.synapse = { command: o.node, args: [o.script, 'serve'], ...(o.global ? {} : { env: { SYNAPSE_PROJECT_ROOT: projectRoot(o) } }) };
+    writeFile(mcpFile, JSON.stringify(mcp, null, 2) + '\n', o, report, 'mcp');
+  }
+
+  // Optional: pre-approve only Synapse's own tools, so non-interactive (-p) runs can use memory.
+  // Always the USER config: a project-level "permissions" block replaces (not extends) the user's rules,
+  // which would silently drop the user's own allow list in that project. The rule only matches Synapse.
+  const permFile = path.join(o.home, '.config', 'devin', 'config.json');
+  if (o.allowTools) {
+    const cfg = readJson(permFile);
+    cfg.permissions ??= {};
+    const allow: unknown[] = Array.isArray(cfg.permissions.allow) ? cfg.permissions.allow : [];
+    if (!allow.includes(DEVIN_ALLOW_RULE)) allow.push(DEVIN_ALLOW_RULE);
+    cfg.permissions.allow = allow;
+    writeFile(permFile, JSON.stringify(cfg, null, 2) + '\n', o, report, 'permissions');
+  } else {
+    report.notes.push(`Devin asks before each Synapse tool call; non-interactive "devin -p" runs reject them. Re-run with --allow-tools to pre-approve only Synapse's tools (adds "${DEVIN_ALLOW_RULE}" to ${permFile}).`);
+  }
+
+  report.notes.push('Start a new Devin CLI session; check the synapse server is listed in its MCP servers.');
+  if (importedFrom.length) report.notes.push('Hooks rely on Devin importing Claude Code config (read_config_from.claude, on by default). If you turned that off, re-run after removing the Claude hooks, or enable it.');
+  if (o.global) report.notes.push('Projects that also have project-level Synapse hooks (.claude/ or .devin/) would run them twice in Devin; keep one level.');
+  return report;
+}
+
 export function runSetup(agent: AgentId, o: SetupOptions): SetupReport {
   if (agent === 'cursor') return setupCursor(o);
   if (agent === 'codex') return setupCodex(o);
+  if (agent === 'devin') return setupDevin(o);
   return setupClaude(o);
 }

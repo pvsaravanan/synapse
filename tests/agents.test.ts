@@ -217,11 +217,204 @@ describe('command failure detection', () => {
     expect(commandFailed('Error: Cannot find module x')).toBe(true);
     expect(commandFailed('error[E0308]: mismatched types')).toBe(true);
     expect(commandFailed('npm ERR! code ELIFECYCLE')).toBe(true);
+    expect(commandFailed('main.c:3:5: error: unknown type name')).toBe(true);
+    expect(commandFailed('src/a.ts(3,5): error TS2322: Type string is not assignable')).toBe(true);
+    expect(commandFailed('src/a.ts:12: // handle error cases')).toBe(false);
+    // Devin CLI: success means "the tool ran"; the exit code is in the output text
+    expect(commandFailed({ success: true, output: 'Output from command in shell 1a2b:\nok\n\nExit code: 1', error: null })).toBe(true);
+    expect(commandFailed({ success: true, output: 'Output from command in shell 1a2b:\nok\n\nExit code: 0', error: null })).toBe(false);
     expect(commandFailed('Tests: 2 failed, 10 passed')).toBe(true);
     expect(commandFailed('zsh: command not found: foo')).toBe(true);
     expect(commandFailed({ stdout: '', stderr: 'Traceback (most recent call last):\n  File "x"' })).toBe(true);
     // grep/cat of source that merely mentions errors is not a failure
     expect(commandFailed('src/hooks.ts:50:const ERROR_TEXT = /error|failed/\nsrc/x.ts:  throw new Error("failed")')).toBe(false);
     expect(commandFailed('3 tests passed, 0 errors')).toBe(false);
+  });
+});
+
+describe('Devin CLI adapter', () => {
+  const env = () => ({ DEVIN_PROJECT_DIR: dir }) as NodeJS.ProcessEnv;
+  const runDevin = (raw: Record<string, unknown>) => {
+    let context: string | undefined;
+    for (const input of normalizeHookPayload('devin', raw, env())) context = handleHook(db, input).context ?? context;
+    return formatHookResult('devin', String(raw.hook_event_name), { context });
+  };
+
+  it('identifies Devin from DEVIN_PROJECT_DIR, even for imported Claude hooks', async () => {
+    const { resolveAgent } = await import('../src/agents.js');
+    const raw = { hook_event_name: 'SessionStart', session_id: 's', source: 'startup' };
+    expect(resolveAgent(undefined, raw, env())).toBe('devin');
+    expect(resolveAgent('claude', raw, env())).toBe('devin'); // Claude hook command run by Devin
+    expect(resolveAgent(undefined, raw, {})).toBe('claude');
+    expect(resolveAgent('cursor', raw, env())).toBe('cursor');
+  });
+
+  it('labels sessions devin, detects the project from DEVIN_PROJECT_DIR, injects the brief', () => {
+    const out = JSON.parse(runDevin({ hook_event_name: 'SessionStart', session_id: 'dv-1', source: 'startup' })!);
+    expect(out.hookSpecificOutput.additionalContext).toContain('# Synapse brief');
+    const s = recentSessions(db, detectProject(dir).id, 5, false)[0];
+    expect(s).toMatchObject({ id: 'dv-1', agent: 'devin' });
+  });
+
+  it('captures edit/write/notebook_edit with varied field names, and apply_patch', () => {
+    const post = (tool_name: string, tool_input: unknown) =>
+      runDevin({ hook_event_name: 'PostToolUse', session_id: 'dv-1', prompt_id: 'p', tool_name, tool_input, tool_response: { success: true, output: 'ok', error: null } });
+    post('edit', { file_path: path.join(dir, 'src/a.ts'), old_string: 'x', new_string: 'alpha' });
+    post('write', { path: 'src/b.ts', content: 'beta' });
+    post('edit', { filePath: 'src/c.ts', edits: [{ old_str: 'x', new_str: 'gamma' }] });
+    post('notebook_edit', { notebook_path: 'nb/analysis.ipynb', new_source: 'print(1)' });
+    post('apply_patch', { patch: '*** Begin Patch\n*** Add File: src/d.ts\n+delta\n*** End Patch' });
+    post('edit', { old_string: 'no path' });
+    post('read', { file_path: 'src/a.ts' });
+    post('mcp_call_tool', { server: 'synapse', tool: 'synapse_search' });
+    const obs = listObservations(db, { projectId: detectProject(dir).id });
+    expect(obs.flatMap((o) => o.filesModified).sort()).toEqual(['nb/analysis.ipynb', 'src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts']);
+    expect(obs.find((o) => o.filesModified[0] === 'src/c.ts')!.narrative).toContain('gamma');
+    expect(obs.every((o) => o.type === 'what-changed')).toBe(true);
+  });
+
+  it('captures exec commands and reads {success, output, error}', () => {
+    const exec = (command: string, tool_response: unknown) =>
+      runDevin({ hook_event_name: 'PostToolUse', session_id: 'dv-1', tool_name: 'exec', tool_input: { command, shell_id: 'main' }, tool_response });
+    exec('npm test', { success: false, output: '', error: 'exit 1' });
+    exec('pnpm build', { success: true, output: 'built in 2s', error: null });
+    exec('cd app && make', { success: true, output: '', error: 'main.c:3:5: error: unknown type name \'sizet\'' });
+    exec('ls', { success: true, output: 'a b', error: null });
+    const obs = listObservations(db, { projectId: detectProject(dir).id });
+    expect(obs.map((o) => [o.type, o.title.replace(/: .*/, '')]).sort()).toEqual([
+      ['discovery', 'Ran'], ['gotcha', 'Command failed'], ['gotcha', 'Command failed'],
+    ]);
+  });
+
+  it('PostCompaction checkpoints a summary, falling back to Devin\'s own', () => {
+    runDevin({ hook_event_name: 'SessionStart', session_id: 'dv-2', source: 'startup' });
+    runDevin({ hook_event_name: 'PostCompaction', session_id: 'dv-2', summary: 'Refactored auth; token=abcdef123456 next: tests' });
+    const s = recentSessions(db, detectProject(dir).id, 5, false).find((x) => x.id === 'dv-2')!;
+    expect(s.summary).toBe('Refactored auth; token=[REDACTED] next: tests');
+    runDevin({ hook_event_name: 'PostToolUse', session_id: 'dv-2', tool_name: 'write', tool_input: { file_path: 'src/auth.ts', content: 'x' } });
+    runDevin({ hook_event_name: 'PostCompaction', session_id: 'dv-2', summary: null });
+    expect(recentSessions(db, detectProject(dir).id, 5, false).find((x) => x.id === 'dv-2')!.summary).toContain('src/auth.ts');
+    runDevin({ hook_event_name: 'SessionEnd', session_id: 'dv-2', reason: 'exit' });
+    expect(recentSessions(db, detectProject(dir).id, 5, false).find((x) => x.id === 'dv-2')!.status).toBe('completed');
+  });
+
+  it('ignores Stop and unknown events', () => {
+    expect(normalizeHookPayload('devin', { hook_event_name: 'Stop', session_id: 's' }, env())).toEqual([]);
+  });
+
+  it('routes an imported Claude hook command to Devin through the real CLI', () => {
+    const cli = path.resolve('dist/cli.js');
+    execFileSync(process.execPath, [cli, 'hook'], {
+      input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'dv-cli', source: 'startup' }),
+      env: { ...process.env, SYNAPSE_DB: path.join(dir, 't.db'), DEVIN_PROJECT_DIR: dir }, cwd: os.tmpdir(), encoding: 'utf8',
+    });
+    const db2 = openDatabase(path.join(dir, 't.db'));
+    expect(recentSessions(db2, detectProject(dir).id, 5, false)[0]).toMatchObject({ id: 'dv-cli', agent: 'devin' });
+  });
+});
+
+describe('setup devin', () => {
+  const opts = (over: Partial<SetupOptions> = {}): SetupOptions => ({
+    global: false, dryRun: false, cwd: dir, home: mkdtempSync(path.join(os.tmpdir(), 'syn-home-')),
+    node: '/opt/node22/bin/node', script: '/opt/synapse/dist/cli.js', useAgentCli: false, ...over,
+  });
+  const json = (f: string) => JSON.parse(readFileSync(f, 'utf8'));
+  const root = () => detectProject(dir).rootPath;
+
+  it('installs .devin/hooks.v1.json + mcp_config.local.json when no Claude hooks exist', async () => {
+    const { setupDevin } = await import('../src/setup.js');
+    const o = opts();
+    setupDevin(o);
+    setupDevin(o);
+    const hooks = json(path.join(root(), '.devin', 'hooks.v1.json'));
+    expect(Object.keys(hooks)).toEqual(['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostCompaction', 'SessionEnd']);
+    expect(hooks.PostToolUse).toHaveLength(1);
+    expect(hooks.PostToolUse[0].hooks[0].command).toBe('"/opt/node22/bin/node" "/opt/synapse/dist/cli.js" hook --agent devin');
+    expect(json(path.join(root(), '.devin', 'mcp_config.local.json')).mcpServers.synapse).toEqual({
+      command: '/opt/node22/bin/node', args: ['/opt/synapse/dist/cli.js', 'serve'], env: { SYNAPSE_PROJECT_ROOT: root() },
+    });
+  });
+
+  it('skips hooks when Devin already imports Synapse Claude hooks (project or user level)', async () => {
+    const { setupDevin } = await import('../src/setup.js');
+    const project = opts();
+    setupClaude(project);
+    const r = setupDevin(project);
+    expect(existsSync(path.join(root(), '.devin', 'hooks.v1.json'))).toBe(false);
+    expect(r.changes[0]).toMatch(/hooks: not added — Devin CLI already imports/);
+    expect(existsSync(path.join(root(), '.devin', 'mcp_config.local.json'))).toBe(true);
+
+    const dir2 = mkdtempSync(path.join(os.tmpdir(), 'syn-agent2-'));
+    const user = opts({ cwd: dir2 });
+    setupClaude({ ...user, global: true });
+    setupDevin(user);
+    expect(existsSync(path.join(detectProject(dir2).rootPath, '.devin', 'hooks.v1.json'))).toBe(false);
+  });
+
+  it('global writes ~/.config/devin/config.json hooks + mcp_config.json and keeps other keys', async () => {
+    const { setupDevin } = await import('../src/setup.js');
+    const o = opts({ global: true });
+    mkdirSync(path.join(o.home, '.config', 'devin'), { recursive: true });
+    writeFileSync(path.join(o.home, '.config', 'devin', 'config.json'), JSON.stringify({ model: 'x', hooks: { Stop: [{ hooks: [{ type: 'command', command: './notify.sh' }] }] } }));
+    setupDevin(o);
+    const cfg = json(path.join(o.home, '.config', 'devin', 'config.json'));
+    expect(cfg.model).toBe('x');
+    expect(Object.keys(cfg.hooks)).toEqual(['Stop', 'SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostCompaction', 'SessionEnd']);
+    expect(json(path.join(o.home, '.config', 'devin', 'mcp_config.json')).mcpServers.synapse.env).toBeUndefined();
+  });
+
+  it('setup claude warns when Devin has its own Synapse hooks (double firing)', async () => {
+    const { setupDevin } = await import('../src/setup.js');
+    const o = opts();
+    setupDevin(o);
+    expect(setupClaude(o).notes.join('\n')).toMatch(/runs every event twice/);
+  });
+});
+
+describe('Devin CLI real payloads (captured from devin 3000.12.57)', () => {
+  it('captures write -> edit as one record and an exec failure with readable output', () => {
+    const env = { DEVIN_PROJECT_DIR: dir } as NodeJS.ProcessEnv;
+    const send = (raw: Record<string, unknown>) => normalizeHookPayload('devin', raw, env).forEach((i) => handleHook(db, i));
+    const f = path.join(dir, 'src/greet.ts');
+    send({ hook_event_name: 'SessionStart', session_id: 'real', source: 'startup' });
+    send({ hook_event_name: 'UserPromptSubmit', prompt: 'Create src/greet.ts and add a JSDoc comment please', prompt_id: 'p1', session_id: 'real', source: 'user' });
+    send({ hook_event_name: 'PostToolUse', prompt_id: 'p1', session_id: 'real', tool_use_id: 't1', tool_name: 'write', tool_input: { file_path: f, content: "export function greet(name: string): string {\n  return 'Hello, ' + name;\n}\n" }, tool_response: { success: true, output: `File created successfully at: ${f}`, error: null } });
+    send({ hook_event_name: 'PostToolUse', prompt_id: 'p1', session_id: 'real', tool_use_id: 't2', tool_name: 'read', tool_input: { file_path: f }, tool_response: { success: true, output: '<file-view>', error: null } });
+    send({ hook_event_name: 'PostToolUse', prompt_id: 'p1', session_id: 'real', tool_use_id: 't3', tool_name: 'edit', tool_input: { file_path: f, old_string: 'export function', new_string: '/** Returns a greeting for the given name. */\nexport function' }, tool_response: { success: true, output: 'updated', error: null } });
+    send({ hook_event_name: 'PostToolUse', prompt_id: 'p1', session_id: 'real', tool_use_id: 't4', tool_name: 'exec', tool_input: { command: 'node -e "process.exit(1)"' }, tool_response: { success: true, output: 'Output from command in shell 76f4b3:\n\n\nExit code: 1', error: null } });
+    send({ hook_event_name: 'PostToolUse', prompt_id: 'p1', session_id: 'real', tool_use_id: 't5', tool_name: 'mcp_list_tools', tool_input: { server_name: 'synapse' }, tool_response: { success: true, output: '[]', error: null } });
+    send({ hook_event_name: 'SessionEnd', prompt_id: 'p1', reason: 'other', session_id: 'real' });
+
+    const pid = detectProject(dir).id;
+    const obs = listObservations(db, { projectId: pid });
+    expect(obs.map((o) => o.type).sort()).toEqual(['gotcha', 'session-request', 'what-changed']);
+    const edit = obs.find((o) => o.type === 'what-changed')!;
+    expect(edit).toMatchObject({ filesModified: ['src/greet.ts'], revisionCount: 2 });
+    const fail = obs.find((o) => o.type === 'gotcha')!;
+    expect(fail.narrative).toContain('Exit code: 1');
+    expect(fail.narrative).not.toContain('"success"');
+    expect(recentSessions(db, pid, 1)[0]).toMatchObject({ id: 'real', agent: 'devin', status: 'completed' });
+  });
+});
+
+describe('setup devin --allow-tools', () => {
+  it('appends only the synapse rule to the USER config (never a project permissions block), opt-in, idempotent', async () => {
+    const { setupDevin } = await import('../src/setup.js');
+    const home = mkdtempSync(path.join(os.tmpdir(), 'syn-home-'));
+    const base = { global: false, dryRun: false, cwd: dir, home, node: '/n', script: '/s/cli.js', useAgentCli: false };
+    const userCfg = path.join(home, '.config', 'devin', 'config.json');
+    const r = setupDevin(base);
+    expect(existsSync(userCfg)).toBe(false);
+    expect(r.notes.join('\n')).toContain('--allow-tools');
+    mkdirSync(path.dirname(userCfg), { recursive: true });
+    writeFileSync(userCfg, JSON.stringify({ theme_mode: 'dark', permissions: { allow: ['Exec(node)', 'Write(/private/tmp)'], deny: ['Exec(rm -rf)'] } }));
+    setupDevin({ ...base, allowTools: true });
+    setupDevin({ ...base, allowTools: true });
+    const cfg = JSON.parse(readFileSync(userCfg, 'utf8'));
+    expect(cfg.theme_mode).toBe('dark');
+    expect(cfg.permissions).toEqual({ allow: ['Exec(node)', 'Write(/private/tmp)', 'mcp__synapse__*'], deny: ['Exec(rm -rf)'] });
+    const root = detectProject(dir).rootPath;
+    expect(existsSync(path.join(root, '.devin', 'config.local.json'))).toBe(false);
+    expect(existsSync(path.join(root, '.devin', 'config.json'))).toBe(false);
   });
 });

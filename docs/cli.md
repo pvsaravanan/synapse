@@ -11,8 +11,8 @@ Commands that work on memory use the project of the **current directory** (see [
 | Command | Description |
 |---|---|
 | `synapse serve [--mode lite\|full]` | Start the stdio MCP server |
-| `synapse hook [--agent claude\|cursor\|codex]` | Handle one agent hook event read as JSON from stdin, and reply in that agent's format. Always exits 0 |
-| `synapse setup <claude\|cursor\|codex> [--global] [--dry-run]` | Install hooks and register the MCP server with an agent ([details](agents.md)) |
+| `synapse hook [--agent claude\|cursor\|codex\|devin]` | Handle one agent hook event read as JSON from stdin, and reply in that agent's format. Always exits 0 |
+| `synapse setup <claude\|cursor\|codex\|devin> [--global] [--dry-run] [--allow-tools]` | Install hooks and register the MCP server with an agent ([details](agents.md)). `--allow-tools` (Devin only) pre-approves Synapse's own tools in your user-level Devin permissions |
 | `synapse doctor` | Check Node, SQLite/FTS5, database path, project detection and git |
 | `synapse version` | Print the version |
 

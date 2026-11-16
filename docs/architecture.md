@@ -1,7 +1,7 @@
 # Architecture
 
 ```
-      Claude Code · Cursor · Codex / MCP client          shell
+  Claude Code · Cursor · Codex · Devin / MCP client     shell
                   │            │                           │
         stdio MCP │            │ hook JSON (stdin)         │
                   ▼            ▼                           ▼
@@ -35,9 +35,9 @@
 | `src/git.ts` | Commit parsing, type inference, noise filter, ingest |
 | `src/graph.ts` | Entity/relation graph |
 | `src/maintenance.ts` | Retention report and archiving, export/import |
-| `src/agents.ts` | Per-agent hook adapters: normalize Cursor and Codex payloads (including `apply_patch` parsing) and format each agent's response |
+| `src/agents.ts` | Per-agent hook adapters: detect the agent (incl. Devin via `DEVIN_PROJECT_DIR`), normalize Cursor, Codex and Devin payloads (including `apply_patch` parsing) and format each agent's response |
 | `src/hooks.ts` | Agent-neutral hook handling: brief injection, capture rules, failure detection, session summaries |
-| `src/setup.ts` | `synapse setup <agent>`: merge hooks and MCP config for Claude Code, Cursor and Codex |
+| `src/setup.ts` | `synapse setup <agent>`: merge hooks and MCP config for Claude Code, Cursor, Codex and Devin CLI, and prevent duplicate hooks where Devin imports Claude's |
 | `src/server.ts` | MCP tool registration (lite and full) |
 | `src/cli.ts` | Command-line entry point |
 | `src/index.ts` | Public library exports |
@@ -78,7 +78,7 @@ npm test            # vitest
 - **Test files:**
   - `tests/core.test.ts`: project detection, redaction, store, search, retention, brief, sessions, git (with a real temporary repo), hooks, export/import
   - `tests/mcp.test.ts`: the MCP server end to end through an in-memory client
-  - `tests/agents.test.ts`: Cursor and Codex adapters, failure detection, `setup` for all three agents, the CLI hook entry point
+  - `tests/agents.test.ts`: Cursor, Codex and Devin adapters, failure detection, `setup` for all four agents, the CLI hook entry point
 - **Test runner:** tests use the vitest `threads` pool (set in `vitest.config.ts`); the default forks pool can hang on macOS when several files load `node:sqlite`.
 - **Test databases:** use `openDatabase(':memory:')` for isolated stores. `createServer({ db, project, mode })` accepts injected dependencies.
 

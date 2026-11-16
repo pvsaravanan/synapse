@@ -34,6 +34,7 @@ From inside the project you want memory for, run the command for your agent:
 synapse setup claude      # Claude Code
 synapse setup cursor      # Cursor
 synapse setup codex       # Codex
+synapse setup devin       # Devin CLI
 ```
 
 Add `--global` to configure every project, or `--dry-run` to preview the changes first.

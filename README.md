@@ -14,7 +14,7 @@ Full documentation: [docs/](docs/README.md) — [getting started](docs/getting-s
 - **Progressive disclosure:** a compact index (`synapse_search`) → timeline (`synapse_timeline`) → full detail (`synapse_detail`)
 - **Task-lensed project brief** (`synapse_project_context`): start-here files, relevant memories, cautions, the last handoff and verification steps, kept under a token budget
 - **Git memory:** commits become typed, source-backed memories, with merge, version-bump and lockfile noise filtered out.
-- **Automatic hooks for Claude Code, Cursor and Codex:**
+- **Automatic hooks for Claude Code, Cursor, Codex and Devin CLI:**
   - inject a brief at session start
   - capture edits and significant or failing commands as down-ranked *candidates*
   - auto-summarize the session at end
@@ -70,6 +70,7 @@ cd your-project
 synapse setup claude      # Claude Code
 synapse setup cursor      # Cursor
 synapse setup codex       # Codex
+synapse setup devin       # Devin CLI
 ```
 
 Add `--global` to configure every project, or `--dry-run` to preview the changes. Setup merges into existing config (with backups) and pins absolute Node 22 paths, so it works even when your default `node` is older.

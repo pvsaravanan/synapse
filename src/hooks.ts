@@ -18,12 +18,15 @@ import { buildProjectContext } from './context.js';
 import type { DB } from './db.js';
 import { detectProject } from './project.js';
 import { endSession, getSession, startSession } from './sessions.js';
+import { redactSecrets } from './secrets.js';
 import { listObservations, storeObservation } from './store.js';
 import type { ObservationType, ProjectInfo } from './types.js';
 
 export interface HookInput {
   /** Which agent sent the event (set by agents.ts). */
-  agent?: 'claude' | 'cursor' | 'codex';
+  agent?: 'claude' | 'cursor' | 'codex' | 'devin';
+  /** Agent-provided compaction summary (Devin's PostCompaction), used when no auto-summary exists. */
+  summary?: string;
   hook_event_name?: string;
   session_id?: string;
   cwd?: string;
@@ -39,7 +42,7 @@ export interface HookOutput {
   context?: string;
 }
 
-const SESSION_AGENT = { claude: 'claude-code', cursor: 'cursor', codex: 'codex' } as const;
+const SESSION_AGENT = { claude: 'claude-code', cursor: 'cursor', codex: 'codex', devin: 'devin' } as const;
 
 const READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebSearch', 'TodoWrite', 'Task', 'Agent', 'ToolSearch', 'Skill', 'update_plan', 'view_image']);
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -54,6 +57,8 @@ const SIGNIFICANT_CMD = /\b(test|vitest|jest|pytest|cargo|go (test|build)|make|t
 const FAILURE_LINE = new RegExp(
   [
     String.raw`^\s*(error|fatal|panic)(\[[^\]]*\])?[:!]`, // "Error: ...", "error[E0308]: ...", "fatal: ..."
+    String.raw`^\S+:\d+(:\d+)?: (fatal )?error\b`, // gcc/clang/go-vet style "main.c:3:5: error: ..."
+    String.raw`^\S+\(\d+,\d+\): error\b`, // TypeScript "src/a.ts(3,5): error TS2322: ..."
     String.raw`^\s*npm (ERR!|error)`,
     String.raw`^\s*(FAIL|FAILED)\b`,
     String.raw`\b\d+ (tests? )?(failed|failing)\b`,
@@ -61,7 +66,7 @@ const FAILURE_LINE = new RegExp(
     String.raw`command not found`,
     String.raw`^\s*\S+: (No such file or directory|Permission denied)`,
     String.raw`Segmentation fault`,
-    String.raw`\bexit(ed)? (with )?(code|status) [1-9]`,
+    String.raw`\bexit(ed)? (with )?(code|status):? [1-9]`, // "exit code 1", Devin's "Exit code: 1"
   ].join('|'),
   'im',
 );
@@ -73,7 +78,8 @@ export function commandFailed(response: unknown): boolean {
     const code = r.exit_code ?? r.exitCode ?? r.status;
     if (typeof code === 'number') return code !== 0;
     if (r.interrupted === true) return false;
-    return FAILURE_LINE.test([r.stdout, r.stderr, r.output].filter((x) => typeof x === 'string').join('\n'));
+    if (r.success === false) return true; // Devin CLI: { success, output, error }
+    return FAILURE_LINE.test([r.stdout, r.stderr, r.output, r.error].filter((x) => typeof x === 'string').join('\n'));
   }
   return typeof response === 'string' && FAILURE_LINE.test(response);
 }
@@ -92,6 +98,16 @@ export function isTrivialCommand(cmd: string): boolean {
   const segments = cmd.split(/&&|\|\||;|\|/).map((s) => s.trim().replace(/^(sudo|time|env \S+=\S+)\s+/, '')).filter(Boolean);
   if (segments.length === 0) return true;
   return segments.every((c) => c.length < 4 || TRIVIAL_CMD.test(c) || TRIVIAL_GIT.test(c) || /^export\s/.test(c));
+}
+
+/** Human-readable text of a tool result: output/stdout/stderr/error fields when present, JSON otherwise. */
+function responseText(v: unknown, max = 800): string {
+  if (v && typeof v === 'object' && !Array.isArray(v)) {
+    const r = v as Record<string, unknown>;
+    const parts = [r.output, r.stdout, r.stderr, r.error].filter((x): x is string => typeof x === 'string' && x.trim() !== '');
+    if (parts.length) return stringify(parts.join('\n').trim(), max);
+  }
+  return stringify(v, max);
 }
 
 function stringify(v: unknown, max = 600): string {
@@ -195,7 +211,7 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
       if (tool === 'Bash') {
         const cmd = String(ti.command ?? '').trim();
         if (!cmd || isTrivialCommand(cmd)) return {};
-        const out = stringify(input.tool_response, 800);
+        const out = responseText(input.tool_response, 800);
         if (isSynapseCommand(cmd, out)) return {};
         const failed = commandFailed(input.tool_response);
         if (!SIGNIFICANT_CMD.test(cmd) && !failed) return {};
@@ -220,7 +236,8 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
 
     case 'PreCompact': {
       if (sessionId) {
-        const s = autoSummary(db, project, sessionId);
+        // Prefer our structured summary; fall back to the agent's own compaction summary (Devin PostCompaction).
+        const s = autoSummary(db, project, sessionId) ?? (input.summary ? redactSecrets(input.summary.trim()).slice(0, 1500) : undefined);
         if (s) db.prepare('UPDATE sessions SET summary = ? WHERE id = ?').run(s, sessionId);
       }
       return {};

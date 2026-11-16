@@ -17,7 +17,7 @@ const HELP = `synapse — local-first project memory for AI coding agents
 Usage: synapse <command> [options]
 
   serve [--mode lite|full]        Start the stdio MCP server
-  hook [--agent claude|cursor|codex]  Handle an agent hook event (JSON on stdin)
+  hook [--agent claude|cursor|codex|devin]  Handle an agent hook event (JSON on stdin)
   context [--task "..."]          Print the task-lensed project brief
   search <query> [--global] [--limit N] [--type T]
   store --type T --entity E --title "..." --narrative "..." [--topic K] [--facts a,b] [--files a,b]
@@ -30,7 +30,7 @@ Usage: synapse <command> [options]
   stats | projects                Counts for this project / all projects
   export [--out FILE]             Export this project's memories as JSON
   import <file> [--project ID]    Import an export bundle
-  setup <claude|cursor|codex> [--global] [--dry-run]\n                                  Register the MCP server + lifecycle hooks with an agent
+  setup <claude|cursor|codex|devin> [--global] [--dry-run] [--allow-tools (devin)]\n                                  Register the MCP server + lifecycle hooks with an agent
   doctor                          Diagnose environment
 
 Env: SYNAPSE_HOME (default ~/.synapse), SYNAPSE_DB, SYNAPSE_MODE, SYNAPSE_HOOK_INJECT=full|minimal|silent
@@ -47,7 +47,7 @@ async function main(): Promise<void> {
       type: { type: 'string' }, entity: { type: 'string' }, title: { type: 'string' }, narrative: { type: 'string' },
       topic: { type: 'string' }, facts: { type: 'string' }, files: { type: 'string' }, status: { type: 'string' },
       count: { type: 'string' }, since: { type: 'string' }, summary: { type: 'string' }, archive: { type: 'boolean' },
-      out: { type: 'string' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, help: { type: 'boolean', short: 'h' },
+      out: { type: 'string' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, 'allow-tools': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     },
   });
   const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : undefined);
@@ -73,12 +73,12 @@ async function main(): Promise<void> {
   if (cmd === 'hook') {
     try {
       const { readStdin, handleHook } = await import('./hooks.js');
-      const { detectAgent, formatHookResult, isAgentId, normalizeHookPayload } = await import('./agents.js');
+      const { formatHookResult, normalizeHookPayload, resolveAgent } = await import('./agents.js');
       const { getDb } = await import('./db.js');
       const raw = await readStdin();
       if (!raw.trim()) return;
       const payload = JSON.parse(raw);
-      const agent = isAgentId(str('agent')) ? (str('agent') as 'claude' | 'cursor' | 'codex') : detectAgent(payload);
+      const agent = resolveAgent(str('agent'), payload);
       let context: string | undefined;
       for (const input of normalizeHookPayload(agent, payload)) {
         context = handleHook(getDb(), input).context ?? context;
@@ -91,7 +91,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (cmd === 'setup') return setup(pos[0], Boolean(v.global), Boolean(v['dry-run']));
+  if (cmd === 'setup') return setup(pos[0], Boolean(v.global), Boolean(v['dry-run']), Boolean(v['allow-tools']));
   if (cmd === 'doctor') return doctor();
 
   const { getDb } = await import('./db.js');
@@ -200,7 +200,7 @@ async function main(): Promise<void> {
   }
 }
 
-async function setup(agent: string | undefined, global: boolean, dryRun: boolean): Promise<void> {
+async function setup(agent: string | undefined, global: boolean, dryRun: boolean, allowTools = false): Promise<void> {
   const { AGENTS, isAgentId } = await import('./agents.js');
   if (!isAgentId(agent)) {
     console.error(`Usage: synapse setup <${AGENTS.join('|')}> [--global] [--dry-run]`);
@@ -216,6 +216,7 @@ async function setup(agent: string | undefined, global: boolean, dryRun: boolean
     node: process.execPath,
     script: fileURLToPath(import.meta.url),
     useAgentCli: true,
+    allowTools,
   });
   console.log(`synapse setup ${agent}${global ? ' --global' : ''}${dryRun ? ' (dry run)' : ''}`);
   for (const c of report.changes) console.log(`  • ${c}`);
