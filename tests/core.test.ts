@@ -219,3 +219,47 @@ describe('export/import', () => {
     expect(importBundle(db2, bundle)).toEqual({ imported: 0, merged: 2 });
   });
 });
+
+describe('live-test regressions', () => {
+  it('ranks a focused memory above a noisy candidate in a small store (BM25 IDF collapse)', () => {
+    // "node" appears in every memory, so its IDF is ~0; coverage must still separate them.
+    storeObservation(db, { ...base, entityName: 'commands', title: 'Command failed: export PATH=.nvm/versions/node/v22/bin', narrative: 'node node versions node v22 node bin node', admissionState: 'candidate' });
+    storeObservation(db, { ...base, entityName: 'docs', type: 'what-changed', title: 'Edited docs/cli.md', narrative: 'Print the installed version', admissionState: 'candidate' });
+    const gotcha = storeObservation(db, { ...base, entityName: 'install', title: 'Synapse needs Node 22 for node:sqlite', narrative: 'The default node is v20, so the command fails with a version problem.' }).observation;
+    expect(search(db, { query: 'node version problem', projectId: P })[0].observation.id).toBe(gotcha.id);
+  });
+
+  it('prefix-matches synonyms in coverage (problem -> fail -> "fails")', async () => {
+    const { queryCoverage } = await import('../src/search.js');
+    const o = storeObservation(db, { ...base, title: 'Build', narrative: 'the build fails on node 20' }).observation;
+    expect(queryCoverage(['node', 'problem'], o)).toBe(1);
+  });
+
+  it('does not capture Synapse invoking itself or echoing its own output', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'syn-self-'));
+    const ev = (command: string, tool_response: string) =>
+      handleHook(db, { hook_event_name: 'PostToolUse', session_id: 's', cwd: dir, tool_name: 'Bash', tool_input: { command }, tool_response });
+    ev('cd /x/proj && synapse stats', 'Error: nothing');
+    ev('npm run build && node dist/cli.js search x', 'Synapse results for "x" (1)\n#1 [GOTCHA] Command failed: y');
+    expect(listObservations(db, { projectId: detectProject(dir).id })).toHaveLength(0);
+    // A real failure in a repo whose path contains "synapse" is still captured.
+    ev('cd /Users/me/proj/synapse && npm test', 'Error: 1 test failed');
+    expect(listObservations(db, { projectId: detectProject(dir).id })).toHaveLength(1);
+  });
+
+  it('ignores edits to files outside the project root', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'syn-out-'));
+    handleHook(db, { hook_event_name: 'PostToolUse', session_id: 's', cwd: dir, tool_name: 'Write', tool_input: { file_path: path.join(os.tmpdir(), 'elsewhere', 'scratch.mjs'), content: 'x' } });
+    handleHook(db, { hook_event_name: 'PostToolUse', session_id: 's', cwd: dir, tool_name: 'Write', tool_input: { file_path: 'src/inside.ts', content: 'y' } });
+    const obs = listObservations(db, { projectId: detectProject(dir).id });
+    expect(obs.map((o) => o.filesModified[0])).toEqual(['src/inside.ts']);
+  });
+});
+
+describe('command chains', () => {
+  it('treats a chain as trivial only when every segment is', () => {
+    expect(isTrivialCommand('cd src && ls')).toBe(true);
+    expect(isTrivialCommand('cd repo && npm test')).toBe(false);
+    expect(isTrivialCommand('export X=1; git status | head')).toBe(true);
+  });
+});

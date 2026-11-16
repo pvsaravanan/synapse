@@ -18,6 +18,8 @@ const SYNONYMS: Record<string, string[]> = {
   perf: ['performance', 'latency', 'slow', 'cache'],
   slow: ['performance', 'latency', 'perf'],
   why: ['decision', 'rationale', 'reason'],
+  problem: ['issue', 'error', 'bug', 'fail'],
+  issue: ['problem', 'bug', 'error'],
 };
 
 const STOP = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'is', 'are', 'was', 'with', 'how', 'what', 'did', 'we', 'i', 'it', 'this', 'that']);
@@ -40,6 +42,22 @@ export function buildFtsQuery(query: string): string | null {
   return [...terms].join(' OR ');
 }
 
+/**
+ * Share of query tokens a memory actually contains (exact, prefix for 4+ chars, or synonym).
+ * BM25's IDF collapses toward zero in small stores, where common terms appear in most
+ * documents; coverage keeps ranking meaningful until the corpus is large enough.
+ */
+export function queryCoverage(tokens: string[], o: Observation): number {
+  if (tokens.length === 0) return 0;
+  const text = `${o.entityName} ${o.title} ${o.narrative} ${o.facts.join(' ')} ${o.filesModified.join(' ')} ${o.concepts.join(' ')}`;
+  const words = new Set(text.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []);
+  const has = (t: string) => words.has(t) || (t.length >= 4 && [...words].some((w) => w.startsWith(t)));
+  // Synonyms prefix-match like query tokens do, so "problem" -> "fail" also finds "fails"/"failing".
+  const matched = tokens.filter((t) => has(t) || (SYNONYMS[t] ?? []).some(has)).length;
+  return matched / tokens.length;
+}
+
+const WEIGHT_BM25 = 0.5;
 const WEIGHT_LEXICAL = 0.7;
 const WEIGHT_RELEVANCE = 0.3;
 const CANDIDATE_PENALTY = 0.6;
@@ -81,7 +99,12 @@ export function search(db: DB, opts: SearchOptions): SearchHit[] {
     try {
       const raw = db.prepare(sql).all(...params) as (Record<string, unknown> & { rank: number })[];
       const best = Math.max(1e-9, ...raw.map((r) => -Number(r.rank)));
-      rows = raw.map((r) => ({ obs: rowToObservation(r), lex: Math.max(0, -Number(r.rank)) / best }));
+      const tokens = queryTokens(opts.query);
+      rows = raw.map((r) => {
+        const obs = rowToObservation(r);
+        const bm25 = Math.max(0, -Number(r.rank)) / best;
+        return { obs, lex: WEIGHT_BM25 * bm25 + (1 - WEIGHT_BM25) * queryCoverage(tokens, obs) };
+      });
     } catch {
       rows = likeFallback(db, opts, types);
     }

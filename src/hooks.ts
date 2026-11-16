@@ -43,9 +43,20 @@ const TRIVIAL_GIT = /^git\s+(status|log|diff|show|branch|remote|fetch|stash list
 const SIGNIFICANT_CMD = /\b(test|vitest|jest|pytest|cargo|go (test|build)|make|tsc|build|lint|eslint|migrate|deploy|docker|kubectl|terraform|npm (run|install|i|ci)|pnpm|yarn|pip install|brew install)\b/;
 const ERROR_TEXT = /\b(error|failed|failure|exception|traceback|panic|cannot|not found|ENOENT|EACCES|segmentation fault)\b/i;
 
+/** Commands that run Synapse itself, e.g. `synapse search x` or `cd repo && synapse stats`. */
+const SYNAPSE_CMD = /(^|[;&|(]\s*|\s)synapse(\s|$)/;
+/** Output that is Synapse's own retrieval text — re-storing it would echo memories into new memories. */
+const SYNAPSE_OUTPUT = /Synapse results for |Synapse memories \(|# Synapse brief|Expand with synapse_detail/;
+
+export function isSynapseCommand(cmd: string, output = ''): boolean {
+  return SYNAPSE_CMD.test(cmd) || SYNAPSE_OUTPUT.test(output);
+}
+
+/** Trivial only if every segment of a chain (`&&`, `||`, `;`, `|`) is trivial: `cd repo && npm test` is not. */
 export function isTrivialCommand(cmd: string): boolean {
-  const c = cmd.trim().replace(/^(sudo|time|env \S+=\S+)\s+/, '');
-  return c.length < 4 || TRIVIAL_CMD.test(c) || TRIVIAL_GIT.test(c);
+  const segments = cmd.split(/&&|\|\||;|\|/).map((s) => s.trim().replace(/^(sudo|time|env \S+=\S+)\s+/, '')).filter(Boolean);
+  if (segments.length === 0) return true;
+  return segments.every((c) => c.length < 4 || TRIVIAL_CMD.test(c) || TRIVIAL_GIT.test(c) || /^export\s/.test(c));
 }
 
 function stringify(v: unknown, max = 600): string {
@@ -54,10 +65,10 @@ function stringify(v: unknown, max = 600): string {
   return s.length > max ? s.slice(0, max) + '…' : s;
 }
 
-function relPath(project: ProjectInfo, file: string): string {
-  const abs = path.resolve(file);
-  const rel = path.relative(project.rootPath, abs);
-  return rel.startsWith('..') ? abs : rel;
+/** Path relative to the project root, or null when the file lives outside the project. */
+function relPath(project: ProjectInfo, file: string): string | null {
+  const rel = path.relative(project.rootPath, path.resolve(project.rootPath, file));
+  return rel === '' || rel.startsWith('..') || path.isAbsolute(rel) ? null : rel;
 }
 
 function entityForFile(rel: string): string {
@@ -127,6 +138,7 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
         const file = String(ti.file_path ?? ti.notebook_path ?? '');
         if (!file) return {};
         const rel = relPath(project, file);
+        if (!rel) return {}; // scratch files, other repos, home config: not this project's history
         const snippet = stringify(ti.new_string ?? ti.content ?? ti.new_source ?? (Array.isArray(ti.edits) ? ti.edits.map((e: { new_string?: string }) => e.new_string).join('\n') : ''), 400);
         storeObservation(db, {
           projectId: project.id,
@@ -149,6 +161,7 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
         const cmd = String(ti.command ?? '').trim();
         if (!cmd || isTrivialCommand(cmd)) return {};
         const out = stringify(input.tool_response, 800);
+        if (isSynapseCommand(cmd, out)) return {};
         const failed = ERROR_TEXT.test(out);
         if (!SIGNIFICANT_CMD.test(cmd) && !failed) return {};
         const type: ObservationType = failed ? 'gotcha' : 'discovery';
