@@ -1,5 +1,6 @@
 /**
- * Claude Code hook handler (`synapse hook`), reading the hook JSON on stdin.
+ * Agent-neutral hook handler (`synapse hook`). Agent payloads (Claude Code,
+ * Codex, Cursor) are normalized to this Claude-style shape by agents.ts.
  *
  *   SessionStart     -> inject a task brief as additionalContext
  *   UserPromptSubmit -> record the session's first substantial prompt as its goal (candidate)
@@ -21,6 +22,8 @@ import { listObservations, storeObservation } from './store.js';
 import type { ObservationType, ProjectInfo } from './types.js';
 
 export interface HookInput {
+  /** Which agent sent the event (set by agents.ts). */
+  agent?: 'claude' | 'cursor' | 'codex';
   hook_event_name?: string;
   session_id?: string;
   cwd?: string;
@@ -32,16 +35,48 @@ export interface HookInput {
 }
 
 export interface HookOutput {
-  stdout?: string;
+  /** Context to inject into the agent (SessionStart); agents.ts formats it per agent. */
+  context?: string;
 }
 
-const READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebSearch', 'TodoWrite', 'Task', 'Agent', 'ToolSearch', 'Skill']);
+const SESSION_AGENT = { claude: 'claude-code', cursor: 'cursor', codex: 'codex' } as const;
+
+const READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebSearch', 'TodoWrite', 'Task', 'Agent', 'ToolSearch', 'Skill', 'update_plan', 'view_image']);
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
 const TRIVIAL_CMD = /^(ls|ll|la|cd|pwd|echo|cat|head|tail|less|more|which|whoami|clear|date|env|printenv|history|true|false|tree|wc|file|stat|open)\b/;
 const TRIVIAL_GIT = /^git\s+(status|log|diff|show|branch|remote|fetch|stash list|rev-parse|config --get)\b/;
 const SIGNIFICANT_CMD = /\b(test|vitest|jest|pytest|cargo|go (test|build)|make|tsc|build|lint|eslint|migrate|deploy|docker|kubectl|terraform|npm (run|install|i|ci)|pnpm|yarn|pip install|brew install)\b/;
-const ERROR_TEXT = /\b(error|failed|failure|exception|traceback|panic|cannot|not found|ENOENT|EACCES|segmentation fault)\b/i;
+/**
+ * Failure-shaped output lines. Deliberately anchored: a grep or cat whose output merely
+ * contains the words "error" or "failed" (e.g. source code) is not a failed command.
+ */
+const FAILURE_LINE = new RegExp(
+  [
+    String.raw`^\s*(error|fatal|panic)(\[[^\]]*\])?[:!]`, // "Error: ...", "error[E0308]: ...", "fatal: ..."
+    String.raw`^\s*npm (ERR!|error)`,
+    String.raw`^\s*(FAIL|FAILED)\b`,
+    String.raw`\b\d+ (tests? )?(failed|failing)\b`,
+    String.raw`^Traceback \(most recent call last\)`,
+    String.raw`command not found`,
+    String.raw`^\s*\S+: (No such file or directory|Permission denied)`,
+    String.raw`Segmentation fault`,
+    String.raw`\bexit(ed)? (with )?(code|status) [1-9]`,
+  ].join('|'),
+  'im',
+);
+
+/** Did a shell command fail? Uses a reported exit code when the agent gives one (Codex), else output shape. */
+export function commandFailed(response: unknown): boolean {
+  if (response && typeof response === 'object') {
+    const r = response as Record<string, unknown>;
+    const code = r.exit_code ?? r.exitCode ?? r.status;
+    if (typeof code === 'number') return code !== 0;
+    if (r.interrupted === true) return false;
+    return FAILURE_LINE.test([r.stdout, r.stderr, r.output].filter((x) => typeof x === 'string').join('\n'));
+  }
+  return typeof response === 'string' && FAILURE_LINE.test(response);
+}
 
 /** Commands that run Synapse itself, e.g. `synapse search x` or `cd repo && synapse stats`. */
 const SYNAPSE_CMD = /(^|[;&|(]\s*|\s)synapse(\s|$)/;
@@ -94,7 +129,7 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
   const event = input.hook_event_name ?? '';
   const project = detectProject(input.cwd || process.cwd());
   const sessionId = input.session_id;
-  if (sessionId) startSession(db, project.id, { id: sessionId, agent: 'claude-code' });
+  if (sessionId) startSession(db, project.id, { id: sessionId, agent: SESSION_AGENT[input.agent ?? 'claude'] });
 
   switch (event) {
     case 'SessionStart': {
@@ -106,7 +141,7 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
         const brief = buildProjectContext(db, project, input.source === 'compact' ? 'continue the current task after compaction' : 'continue work on this project', { maxTokens: 700 });
         context = `${hint}\n\n${brief.text}`;
       }
-      return { stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } }) };
+      return { context };
     }
 
     case 'UserPromptSubmit': {
@@ -162,7 +197,7 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
         if (!cmd || isTrivialCommand(cmd)) return {};
         const out = stringify(input.tool_response, 800);
         if (isSynapseCommand(cmd, out)) return {};
-        const failed = ERROR_TEXT.test(out);
+        const failed = commandFailed(input.tool_response);
         if (!SIGNIFICANT_CMD.test(cmd) && !failed) return {};
         const type: ObservationType = failed ? 'gotcha' : 'discovery';
         const short = cmd.split('\n')[0].slice(0, 80);

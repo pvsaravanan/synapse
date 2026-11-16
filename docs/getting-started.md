@@ -26,33 +26,30 @@ ok  project: acme/app @ /path/to/app
 ok  git available
 ```
 
-## Connect to Claude Code
+## Connect your agent
 
-From inside the project you want memory for:
-
-```bash
-synapse setup claude --dry-run   # preview the changes
-synapse setup claude             # this project only
-```
-
-Or, for every project:
+From inside the project you want memory for, run the command for your agent:
 
 ```bash
-synapse setup claude --global
+synapse setup claude      # Claude Code
+synapse setup cursor      # Cursor
+synapse setup codex       # Codex
 ```
 
-The setup command does two things:
+Add `--global` to configure every project, or `--dry-run` to preview the changes first.
 
-1. It adds Synapse's lifecycle hooks to `.claude/settings.local.json`, or to `~/.claude/settings.json` with `--global`. Any existing file is backed up first as `*.synapse-backup`.
-2. It registers the MCP server with `claude mcp add synapse`.
+Setup does two things:
 
-Both use the absolute path of the Node binary that ran `setup`. That way they keep working even if your shell's default `node` is older than 22.
+1. It installs Synapse's lifecycle hooks: a brief at session start, auto-capture, and a summary at session end.
+2. It registers the MCP server so the agent gets the `synapse_*` tools.
 
-Restart Claude Code afterwards. See [Claude Code integration](claude-code.md) for the plugin alternative and other MCP clients.
+Existing config is merged, not replaced, and backed up first as `*.synapse-backup`. Commands use the absolute path of the Node binary that ran `setup`, so they keep working even if your shell's default `node` is older than 22.
+
+Then restart the agent. For Codex, also approve the synapse hooks once in `/hooks` and start a new thread. See [Agent integration](agents.md) for the exact files each agent uses and for other MCP clients.
 
 ## First memories
 
-Inside a Claude Code session the agent uses the tools on its own. You can also prompt it directly:
+Inside a connected agent's session, memory is used on its own. You can also prompt it directly:
 
 > "Before you start, get the Synapse brief for: fix the login redirect loop."
 

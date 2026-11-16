@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +17,7 @@ const HELP = `synapse — local-first project memory for AI coding agents
 Usage: synapse <command> [options]
 
   serve [--mode lite|full]        Start the stdio MCP server
-  hook                            Handle a Claude Code hook event (JSON on stdin)
+  hook [--agent claude|cursor|codex]  Handle an agent hook event (JSON on stdin)
   context [--task "..."]          Print the task-lensed project brief
   search <query> [--global] [--limit N] [--type T]
   store --type T --entity E --title "..." --narrative "..." [--topic K] [--facts a,b] [--files a,b]
@@ -30,7 +30,7 @@ Usage: synapse <command> [options]
   stats | projects                Counts for this project / all projects
   export [--out FILE]             Export this project's memories as JSON
   import <file> [--project ID]    Import an export bundle
-  setup claude [--global] [--dry-run]   Register MCP server + hooks with Claude Code
+  setup <claude|cursor|codex> [--global] [--dry-run]\n                                  Register the MCP server + lifecycle hooks with an agent
   doctor                          Diagnose environment
 
 Env: SYNAPSE_HOME (default ~/.synapse), SYNAPSE_DB, SYNAPSE_MODE, SYNAPSE_HOOK_INJECT=full|minimal|silent
@@ -47,7 +47,7 @@ async function main(): Promise<void> {
       type: { type: 'string' }, entity: { type: 'string' }, title: { type: 'string' }, narrative: { type: 'string' },
       topic: { type: 'string' }, facts: { type: 'string' }, files: { type: 'string' }, status: { type: 'string' },
       count: { type: 'string' }, since: { type: 'string' }, summary: { type: 'string' }, archive: { type: 'boolean' },
-      out: { type: 'string' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+      out: { type: 'string' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, help: { type: 'boolean', short: 'h' },
     },
   });
   const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : undefined);
@@ -73,11 +73,18 @@ async function main(): Promise<void> {
   if (cmd === 'hook') {
     try {
       const { readStdin, handleHook } = await import('./hooks.js');
+      const { detectAgent, formatHookResult, isAgentId, normalizeHookPayload } = await import('./agents.js');
       const { getDb } = await import('./db.js');
       const raw = await readStdin();
       if (!raw.trim()) return;
-      const out = handleHook(getDb(), JSON.parse(raw));
-      if (out.stdout) process.stdout.write(out.stdout);
+      const payload = JSON.parse(raw);
+      const agent = isAgentId(str('agent')) ? (str('agent') as 'claude' | 'cursor' | 'codex') : detectAgent(payload);
+      let context: string | undefined;
+      for (const input of normalizeHookPayload(agent, payload)) {
+        context = handleHook(getDb(), input).context ?? context;
+      }
+      const out = formatHookResult(agent, String(payload.hook_event_name ?? ''), { context });
+      if (out) process.stdout.write(out);
     } catch (e) {
       if (process.env.SYNAPSE_DEBUG) process.stderr.write(`[synapse hook] ${(e as Error).stack}\n`);
     }
@@ -193,46 +200,26 @@ async function main(): Promise<void> {
   }
 }
 
-function selfCommand(): { node: string; script: string } {
-  return { node: process.execPath, script: fileURLToPath(import.meta.url) };
-}
-
-const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreCompact', 'SessionEnd'];
-
-function setup(agent: string | undefined, global: boolean, dryRun: boolean): void {
-  if (agent !== 'claude') {
-    console.error('Usage: synapse setup claude [--global] [--dry-run]');
+async function setup(agent: string | undefined, global: boolean, dryRun: boolean): Promise<void> {
+  const { AGENTS, isAgentId } = await import('./agents.js');
+  if (!isAgentId(agent)) {
+    console.error(`Usage: synapse setup <${AGENTS.join('|')}> [--global] [--dry-run]`);
     process.exitCode = 1;
     return;
   }
-  const { node, script } = selfCommand();
-  const hookCmd = `"${node}" "${script}" hook`;
-  const settingsPath = global ? path.join(os.homedir(), '.claude', 'settings.json') : path.join(process.cwd(), '.claude', 'settings.local.json');
-
-  let settings: Record<string, any> = {};
-  if (existsSync(settingsPath)) settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
-  settings.hooks ??= {};
-  for (const ev of HOOK_EVENTS) {
-    const groups: any[] = (settings.hooks[ev] ??= []);
-    const already = groups.some((g) => (g.hooks ?? []).some((h: any) => typeof h.command === 'string' && /synapse|cli\.js" hook$/.test(h.command) && h.command.endsWith(' hook')));
-    if (!already) groups.push({ hooks: [{ type: 'command', command: hookCmd, timeout: 10 }] });
-  }
-
-  const mcpArgs = ['mcp', 'add', 'synapse', '-s', global ? 'user' : 'local', '--', node, script, 'serve'];
-  if (dryRun) {
-    console.log(`Would write hooks to ${settingsPath}:\n${JSON.stringify(settings.hooks, null, 2)}`);
-    console.log(`Would run: claude ${mcpArgs.join(' ')}`);
-    return;
-  }
-  mkdirSync(path.dirname(settingsPath), { recursive: true });
-  if (existsSync(settingsPath)) copyFileSync(settingsPath, `${settingsPath}.synapse-backup`);
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-  console.log(`Hooks written to ${settingsPath}${existsSync(`${settingsPath}.synapse-backup`) ? ' (backup: .synapse-backup)' : ''}`);
-  try {
-    execFileSync('claude', mcpArgs, { stdio: 'inherit' });
-  } catch {
-    console.log(`Could not run the claude CLI. Register the MCP server manually:\n  claude ${mcpArgs.map((a) => (a.includes(' ') ? `"${a}"` : a)).join(' ')}`);
-  }
+  const { runSetup } = await import('./setup.js');
+  const report = runSetup(agent, {
+    global,
+    dryRun,
+    cwd: process.cwd(),
+    home: os.homedir(),
+    node: process.execPath,
+    script: fileURLToPath(import.meta.url),
+    useAgentCli: true,
+  });
+  console.log(`synapse setup ${agent}${global ? ' --global' : ''}${dryRun ? ' (dry run)' : ''}`);
+  for (const c of report.changes) console.log(`  • ${c}`);
+  for (const n of report.notes) console.log(`  → ${n}`);
 }
 
 async function doctor(): Promise<void> {

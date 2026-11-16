@@ -8,7 +8,7 @@ Synapse is configured entirely through environment variables. There is no config
 | `SYNAPSE_DB` | `$SYNAPSE_HOME/synapse.db` | Database file. Use `:memory:` for throwaway runs |
 | `SYNAPSE_MODE` | `lite` | `full` adds the knowledge-graph tools and `synapse_export` to the MCP server |
 | `SYNAPSE_PROJECT_ROOT` | current directory | Directory the MCP server uses to detect its project |
-| `SYNAPSE_HOOK_INJECT` | `full` | `full`, `minimal` or `silent`; see [Claude Code](claude-code.md#controlling-injection) |
+| `SYNAPSE_HOOK_INJECT` | `full` | `full`, `minimal` or `silent`; see [Agent integration](agents.md#controlling-injection) |
 | `SYNAPSE_DEBUG` | unset | When set, hook errors are printed to stderr |
 
 `synapse serve --mode full` overrides `SYNAPSE_MODE`.

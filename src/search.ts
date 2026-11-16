@@ -60,7 +60,8 @@ export function queryCoverage(tokens: string[], o: Observation): number {
 const WEIGHT_BM25 = 0.5;
 const WEIGHT_LEXICAL = 0.7;
 const WEIGHT_RELEVANCE = 0.3;
-const CANDIDATE_PENALTY = 0.6;
+/** Auto-captured candidates are unreviewed logs; curated memories should win comparable matches. */
+const CANDIDATE_PENALTY = 0.45;
 
 export function search(db: DB, opts: SearchOptions): SearchHit[] {
   const limit = opts.limit ?? 10;

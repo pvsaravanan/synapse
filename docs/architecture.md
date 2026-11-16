@@ -1,7 +1,7 @@
 # Architecture
 
 ```
-            Claude Code / MCP client                     shell
+      Claude Code · Cursor · Codex / MCP client          shell
                   │            │                           │
         stdio MCP │            │ hook JSON (stdin)         │
                   ▼            ▼                           ▼
@@ -35,9 +35,11 @@
 | `src/git.ts` | Commit parsing, type inference, noise filter, ingest |
 | `src/graph.ts` | Entity/relation graph |
 | `src/maintenance.ts` | Retention report and archiving, export/import |
-| `src/hooks.ts` | Claude Code hook handling |
+| `src/agents.ts` | Per-agent hook adapters: normalize Cursor and Codex payloads (including `apply_patch` parsing) and format each agent's response |
+| `src/hooks.ts` | Agent-neutral hook handling: brief injection, capture rules, failure detection, session summaries |
+| `src/setup.ts` | `synapse setup <agent>`: merge hooks and MCP config for Claude Code, Cursor and Codex |
 | `src/server.ts` | MCP tool registration (lite and full) |
-| `src/cli.ts` | Command-line entry point and `setup claude` |
+| `src/cli.ts` | Command-line entry point |
 | `src/index.ts` | Public library exports |
 
 ## Database schema
@@ -76,6 +78,7 @@ npm test            # vitest
 - **Test files:**
   - `tests/core.test.ts`: project detection, redaction, store, search, retention, brief, sessions, git (with a real temporary repo), hooks, export/import
   - `tests/mcp.test.ts`: the MCP server end to end through an in-memory client
+  - `tests/agents.test.ts`: Cursor and Codex adapters, failure detection, `setup` for all three agents, the CLI hook entry point
 - **Test runner:** tests use the vitest `threads` pool (set in `vitest.config.ts`); the default forks pool can hang on macOS when several files load `node:sqlite`.
 - **Test databases:** use `openDatabase(':memory:')` for isolated stores. `createServer({ db, project, mode })` accepts injected dependencies.
 
@@ -88,8 +91,8 @@ npm test            # vitest
 
 ### Supporting another agent
 
-The hook handler expects Claude Code's JSON fields (`hook_event_name`, `session_id`, `cwd`, `tool_name`, `tool_input`, `tool_response`, `prompt`, `source`). To add another agent:
+`hooks.ts` works on one internal, Claude-shaped event (`HookInput`: `hook_event_name`, `session_id`, `cwd`, `tool_name`, `tool_input`, `tool_response`, `prompt`, `source`). To add an agent:
 
-1. Map its payload onto `HookInput`.
-2. Translate the SessionStart output to that agent's format.
-3. Add a `setup <agent>` branch in `cli.ts`.
+1. Add it to `AGENTS` in `src/agents.ts`. Write a normalizer that maps its events and fields onto `HookInput` (one payload may become several events, as Codex's `apply_patch` does), and teach `formatHookResult` its context-injection format.
+2. Add a `setupX` function in `src/setup.ts` that merges its hooks and MCP config.
+3. Add adapter and setup tests to `tests/agents.test.ts`, and document the agent in `docs/agents.md`.

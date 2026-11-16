@@ -189,7 +189,7 @@ describe('hooks', () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'syn-hook-'));
     const sid = 'sess-1';
     const start = handleHook(db, { hook_event_name: 'SessionStart', session_id: sid, cwd: dir, source: 'startup' });
-    expect(JSON.parse(start.stdout!).hookSpecificOutput.additionalContext).toContain('Synapse');
+    expect(start.context).toContain('Synapse');
     handleHook(db, { hook_event_name: 'UserPromptSubmit', session_id: sid, cwd: dir, prompt: 'Add rate limiting to the public API' });
     for (const s of ['a', 'b']) {
       handleHook(db, { hook_event_name: 'PostToolUse', session_id: sid, cwd: dir, tool_name: 'Edit', tool_input: { file_path: path.join(dir, 'src/api/limit.ts'), new_string: s } });

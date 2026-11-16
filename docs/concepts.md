@@ -104,7 +104,7 @@ Search uses SQLite FTS5 with BM25.
 score = 0.7 × normalizedBM25 + 0.3 × relevance
 ```
 
-Auto-captured `candidate` memories are multiplied by 0.6, so explicit knowledge outranks them. An empty query skips text matching and lists memories by relevance alone, which is useful for "what do we know?".
+Auto-captured `candidate` memories are multiplied by 0.45, so curated knowledge outranks comparable matches from logs. An empty query skips text matching and lists memories by relevance alone, which is useful for "what do we know?".
 
 ## Retention and relevance
 
@@ -155,7 +155,7 @@ A session groups the work of one agent run:
 - `synapse_session_start` opens a session and returns the latest handoff summaries.
 - `synapse_session_end { summary }` closes it with a handoff: what was done, what's left, where to resume.
 
-With Claude Code hooks installed, sessions follow Claude's own session ids. They close automatically with a generated summary (goal, files touched, memories stored).
+With an agent's hooks installed, sessions follow that agent's own session or conversation ids. They close automatically with a generated summary (goal, files touched, memories stored).
 
 ## The project context brief
 
