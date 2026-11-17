@@ -14,7 +14,7 @@ synapse setup codex    [--global] [--dry-run]
 synapse setup devin    [--global] [--dry-run] [--allow-tools]
 ```
 
-Without `--global`, setup configures the project in the current directory. With `--global`, it configures every project for that agent. `--dry-run` prints what would change and writes nothing.
+Without `--global`, setup configures the project in the current directory, including its [agent instructions](#agent-instructions). With `--global`, it configures every project for that agent. `--dry-run` prints what would change and writes nothing.
 
 All three agents share one memory store (`~/.synapse/synapse.db`), so a decision stored from Cursor shows up in Claude Code's next brief.
 
@@ -27,6 +27,8 @@ All three agents share one memory store (`~/.synapse/synapse.db`), so a decision
 | **Codex** | `.codex/hooks.json`, or `~/.codex/hooks.json` with `--global` | A `[mcp_servers.synapse]` table in `.codex/config.toml`, or `~/.codex/config.toml` with `--global` |
 | **Devin CLI** | `.devin/hooks.v1.json`, or `~/.config/devin/config.json` with `--global`. **Skipped** when Devin already imports Synapse's Claude Code hooks (see below) | `devin mcp add` (local scope: `.devin/mcp_config.local.json`; user scope with `--global`: `~/.config/devin/mcp_config.json`). Setup writes the file directly if the `devin` command isn't available |
 
+| **Instructions** (all agents, project scope) | A marked block in `CLAUDE.md` (Claude Code) or `AGENTS.md` (Cursor, Codex, Devin CLI) at the project root | |
+
 How setup behaves:
 
 - **Merges, never replaces.** Your other hooks and MCP servers are kept. A file is backed up as `*.synapse-backup` before it changes. Invalid JSON is reported and left untouched.
@@ -34,6 +36,18 @@ How setup behaves:
 - **Pins absolute paths.** Commands use the absolute paths of the Node binary and `cli.js` that ran setup, so they keep working when your shell's default `node` is older than 22.
 - **Binds the project.** Project-scoped MCP config sets `SYNAPSE_PROJECT_ROOT`, so the server knows which project it serves even when the agent starts it from elsewhere.
 - **Keep project files private.** The project-level files contain machine-specific absolute paths, so keep `.claude/`, `.cursor/`, `.codex/` and `.devin/` out of version control.
+
+### Agent instructions
+
+Hooks deliver context automatically, but storing what was learned is the agent's own choice, and agents rarely make it unprompted. So setup adds a short Markdown block to the project's instructions file, telling the agent when to search, what to store (non-obvious fixes, gotchas, decisions, how things work), what not to store, how to handle "changed since" flags, and to leave long-term approval to you.
+
+- **Which file:** `CLAUDE.md` for Claude Code; `AGENTS.md` for Cursor, Codex and Devin CLI.
+- **Merged, not replaced.** The block sits between `<!-- synapse:start -->` and `<!-- synapse:end -->`. Re-running setup refreshes it in place and leaves the rest of the file alone. A changed file is backed up first.
+- **One copy for Devin.** Devin CLI loads both `CLAUDE.md` and `AGENTS.md` as always-on rules. If `CLAUDE.md` already has the block, `setup devin` skips `AGENTS.md`. If `AGENTS.md` already has it, `setup claude` adds an `@AGENTS.md` import line to `CLAUDE.md` instead of a second copy (Claude Code expands the import; Devin sees only the line).
+- **Commit these files.** Unlike the hook and MCP config, they contain no machine paths, so teammates' agents get the same instructions.
+- **Opt out** with `--no-instructions`. With `--global` nothing is written; paste the output of `synapse instructions` into your global `CLAUDE.md` or `AGENTS.md` if you want it everywhere.
+
+Devin reads any file named `agents.md` (case-insensitive) as an AGENTS.md rule for its directory, so avoid naming a nested doc `agents.md` unless it is meant as instructions for that directory (this guide is `agent-integration.md` for that reason).
 
 ### After setup
 
@@ -143,13 +157,7 @@ Agents without hook support (Windsurf, VS Code Copilot, Gemini CLI, Claude Deskt
 }
 ```
 
-Without hooks nothing happens automatically, so tell the agent to use memory in its instructions file (`AGENTS.md`, rules, …):
-
-```markdown
-- For non-trivial tasks, call `synapse_project_context` with the task first.
-- Search Synapse before re-investigating past bugs or decisions.
-- Store decisions, gotchas and fixes with `synapse_store`; end with `synapse_session_end`.
-```
+Without hooks nothing happens automatically, so tell the agent to use memory in its instructions file (`AGENTS.md`, rules, …). `synapse instructions` prints the block setup uses; paste it in.
 
 **Cloud agents** (Devin's cloud sessions, Codex cloud, …) run on remote machines and can't reach a Synapse server on your computer. Install Synapse on their machine instead; its memory then stays there. The local **Devin CLI** is fully supported through `synapse setup devin`.
 

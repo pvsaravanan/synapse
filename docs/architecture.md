@@ -95,4 +95,4 @@ npm test            # vitest
 
 1. Add it to `AGENTS` in `src/agents.ts`. Write a normalizer that maps its events and fields onto `HookInput` (one payload may become several events, as Codex's `apply_patch` does), and teach `formatHookResult` its context-injection format.
 2. Add a `setupX` function in `src/setup.ts` that merges its hooks and MCP config.
-3. Add adapter and setup tests to `tests/agents.test.ts`, and document the agent in `docs/agents.md`.
+3. Add adapter and setup tests to `tests/agents.test.ts`, and document the agent in `docs/agent-integration.md`.

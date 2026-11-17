@@ -39,14 +39,15 @@ synapse setup devin       # Devin CLI
 
 Add `--global` to configure every project, or `--dry-run` to preview the changes first.
 
-Setup does two things:
+Setup does three things:
 
 1. It installs Synapse's lifecycle hooks: a brief at session start, auto-capture, and a summary at session end.
 2. It registers the MCP server so the agent gets the `synapse_*` tools.
+3. It adds a short memory-instructions block to the project's `CLAUDE.md` (Claude Code) or `AGENTS.md` (Cursor, Codex, Devin CLI). Hooks can't decide what's worth remembering, so this tells the agent when to store decisions, gotchas and fixes. Skip it with `--no-instructions`.
 
 Existing config is merged, not replaced, and backed up first as `*.synapse-backup`. Commands use the absolute path of the Node binary that ran `setup`, so they keep working even if your shell's default `node` is older than 22.
 
-Then restart the agent. For Codex, also approve the synapse hooks once in `/hooks` and start a new thread. See [Agent integration](agents.md) for the exact files each agent uses and for other MCP clients.
+Then restart the agent. For Codex, also approve the synapse hooks once in `/hooks` and start a new thread. See [Agent integration](agent-integration.md) for the exact files each agent uses and for other MCP clients.
 
 ## First memories
 

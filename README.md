@@ -4,7 +4,7 @@ Local-first, project-aware memory for AI coding agents, served over MCP.
 
 Synapse stores what agents learn about a project: decisions, gotchas, fixes, reasoning, session handoffs and git history. Everything goes into one SQLite file on your machine. Any later session or agent can pick it up through cheap, token-budgeted retrieval.
 
-Full documentation: [docs/](docs/README.md) — [getting started](docs/getting-started.md), [concepts](docs/concepts.md), [MCP tools](docs/mcp-tools.md), [CLI](docs/cli.md), [agent integration](docs/agents.md), [configuration](docs/configuration.md), [architecture](docs/architecture.md).
+Full documentation: [docs/](docs/README.md) — [getting started](docs/getting-started.md), [concepts](docs/concepts.md), [MCP tools](docs/mcp-tools.md), [CLI](docs/cli.md), [agent integration](docs/agent-integration.md), [configuration](docs/configuration.md), [architecture](docs/architecture.md).
 
 ## Features
 
@@ -66,7 +66,7 @@ Also remove the `synapse ... hook` entries from `.claude/settings.local.json` or
 
 ## Connect your agent
 
-One command registers the MCP server **and** installs lifecycle hooks, so the agent uses memory automatically:
+One command registers the MCP server, installs lifecycle hooks, and adds memory instructions to the project's `CLAUDE.md` or `AGENTS.md`:
 
 ```bash
 cd your-project
@@ -76,11 +76,13 @@ synapse setup codex       # Codex
 synapse setup devin       # Devin CLI
 ```
 
+Hooks handle the automatic part: the brief at session start, capturing edits and commands, checkpoints. Saving what was *learned* (decisions, gotchas, fixes) is up to the agent, and agents rarely do it unprompted, so setup also adds a short instruction block telling them when to. Skip it with `--no-instructions`; `synapse instructions` prints it.
+
 Add `--global` to configure every project, or `--dry-run` to preview the changes. Setup merges into existing config (with backups) and pins absolute Node 22 paths, so it works even when your default `node` is older.
 
 Then restart the agent. **Codex only:** approve the synapse hooks once in `/hooks`, then start a new thread.
 
-All agents share one memory store, so what one agent learns, the others see. For what each agent's hooks capture, the Claude Code plugin alternative, and other MCP clients, see [agent integration](docs/agents.md).
+All agents share one memory store, so what one agent learns, the others see. For what each agent's hooks capture, the Claude Code plugin alternative, and other MCP clients, see [agent integration](docs/agent-integration.md).
 
 ## MCP tools
 

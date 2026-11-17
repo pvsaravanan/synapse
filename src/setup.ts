@@ -23,6 +23,8 @@ export interface SetupOptions {
   useAgentCli?: boolean;
   /** Devin: pre-approve Synapse's MCP tools except the approval gate (permissions.allow). Opt-in. */
   allowTools?: boolean;
+  /** Add Synapse's memory instructions to the project's CLAUDE.md / AGENTS.md (default true; project scope only). */
+  instructions?: boolean;
 }
 
 export interface SetupReport {
@@ -71,6 +73,74 @@ function writeFile(file: string, content: string, o: SetupOptions, report: Setup
 
 function projectRoot(o: SetupOptions): string {
   return detectProject(o.cwd).rootPath;
+}
+
+// ── Agent instructions (CLAUDE.md / AGENTS.md) ───────────────────────────
+
+const BLOCK_START = '<!-- synapse:start -->';
+const BLOCK_END = '<!-- synapse:end -->';
+
+/**
+ * Hooks deliver context automatically, but storing what was learned is the agent's choice, and agents rarely
+ * make it unprompted. These instructions tell them when to.
+ */
+export const SYNAPSE_INSTRUCTIONS = `## Memory (Synapse)
+
+This project uses Synapse for memory shared across sessions and agents. A brief is injected at session start; current code and the user's request always win over memory.
+
+- **Before non-trivial work:** call \`synapse_project_context\` with the task, and read its "Start here" files.
+- **Before re-investigating** a bug, error or past decision: \`synapse_search\` first, then \`synapse_detail\` on relevant ids.
+- **Store as you go**, without being asked, with \`synapse_store\`: non-obvious bug causes and fixes (\`problem-solution\`), traps and environment quirks (\`gotcha\`), design choices (\`decision\`; use \`synapse_store_reasoning\` for the why and the rejected alternatives), and how a subsystem works (\`how-it-works\`). Name the files involved in \`filesModified\`. Use \`topicKey\` for topics that evolve.
+- **Don't store** what the code or git history already says, routine edits, or secrets.
+- **A memory flagged "changed since: …"** names files edited after it was stored: check current code, then \`synapse_feedback\` with \`verified\` or \`outdated\`. Use \`synapse_resolve\` for memories that no longer hold.
+- **Lasting facts, procedures and user preferences:** propose with \`synapse_lt_propose\`. The user approves them; don't approve on their behalf.
+- **When a session's work is done:** \`synapse_session_end\` with a handoff summary (done, left, where to resume).`;
+
+export function instructionsBlock(): string {
+  return `${BLOCK_START}\n${SYNAPSE_INSTRUCTIONS}\n${BLOCK_END}`;
+}
+
+/** Insert or refresh Synapse's block in a Markdown file, leaving everything else as it is. */
+export function mergeInstructions(existing: string): string {
+  const block = instructionsBlock();
+  const start = existing.indexOf(BLOCK_START);
+  const end = existing.indexOf(BLOCK_END);
+  if (start !== -1 && end > start) return existing.slice(0, start) + block + existing.slice(end + BLOCK_END.length);
+  const body = existing.trimEnd();
+  return body ? `${body}\n\n${block}\n` : `${block}\n`;
+}
+
+/** Claude Code reads CLAUDE.md; Cursor, Codex and Devin CLI read AGENTS.md. */
+export function instructionsFileName(agent: AgentId): string {
+  return agent === 'claude' ? 'CLAUDE.md' : 'AGENTS.md';
+}
+
+function setupInstructions(agent: AgentId, o: SetupOptions, report: SetupReport): void {
+  if (o.instructions === false) return;
+  const name = instructionsFileName(agent);
+  if (o.global) {
+    report.notes.push(`Agent instructions are added per project. Run "synapse setup ${agent}" in a project, or paste "synapse instructions" into your global ${name}.`);
+    return;
+  }
+  const root = projectRoot(o);
+  const file = path.join(root, name);
+  const read = (f: string) => (existsSync(f) ? readFileSync(f, 'utf8') : '');
+  const current = read(file);
+  const claudeMd = path.join(root, 'CLAUDE.md');
+  const agentsHasBlock = read(path.join(root, 'AGENTS.md')).includes(BLOCK_START);
+  const importsAgents = (text: string) => /^@AGENTS\.md\s*$/m.test(text);
+  if (agent === 'claude' && !current.includes(BLOCK_START) && agentsHasBlock) {
+    // Devin reads both files, so keep one copy: CLAUDE.md imports AGENTS.md (Claude Code expands @imports).
+    if (importsAgents(current)) report.changes.push('instructions: already present (CLAUDE.md imports AGENTS.md)');
+    else writeFile(file, `${current.trimEnd() ? current.trimEnd() + '\n\n' : ''}@AGENTS.md\n`, o, report, 'instructions (import of AGENTS.md)');
+    return;
+  }
+  if (agent === 'devin' && read(claudeMd).includes(BLOCK_START)) {
+    // Devin CLI loads CLAUDE.md as an always-on rule too; a second copy in AGENTS.md would be read twice.
+    report.changes.push(`instructions: already present (${claudeMd}, which Devin CLI also reads)`);
+    return;
+  }
+  writeFile(file, mergeInstructions(current), o, report, 'instructions');
 }
 
 // ── Claude Code ──────────────────────────────────────────────────────────
@@ -317,8 +387,8 @@ export function setupDevin(o: SetupOptions): SetupReport {
 }
 
 export function runSetup(agent: AgentId, o: SetupOptions): SetupReport {
-  if (agent === 'cursor') return setupCursor(o);
-  if (agent === 'codex') return setupCodex(o);
-  if (agent === 'devin') return setupDevin(o);
-  return setupClaude(o);
+  const run = { cursor: setupCursor, codex: setupCodex, devin: setupDevin, claude: setupClaude }[agent];
+  const report = run(o);
+  setupInstructions(agent, o, report);
+  return report;
 }

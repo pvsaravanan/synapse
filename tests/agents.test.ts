@@ -442,3 +442,65 @@ describe('setup devin --allow-tools', () => {
     expect(r.notes.join('\n')).toContain('asks you again');
   });
 });
+
+describe('setup: agent instructions (CLAUDE.md / AGENTS.md)', () => {
+  const opts = (over: Partial<SetupOptions> = {}): SetupOptions => ({
+    global: false, dryRun: false, cwd: dir, home: mkdtempSync(path.join(os.tmpdir(), 'syn-home-')), node: '/n', script: '/s/cli.js', useAgentCli: false, ...over,
+  });
+  const root = () => detectProject(dir).rootPath;
+  const read = (name: string) => (existsSync(path.join(root(), name)) ? readFileSync(path.join(root(), name), 'utf8') : '');
+  const count = (text: string) => text.split('<!-- synapse:start -->').length - 1;
+
+  it('adds the block to CLAUDE.md for Claude Code, keeps existing content, and is idempotent', async () => {
+    const { runSetup, SYNAPSE_INSTRUCTIONS } = await import('../src/setup.js');
+    writeFileSync(path.join(root(), 'CLAUDE.md'), '# My project\n\nUse pnpm.\n');
+    runSetup('claude', opts());
+    runSetup('claude', opts());
+    const md = read('CLAUDE.md');
+    expect(md.startsWith('# My project\n\nUse pnpm.\n\n<!-- synapse:start -->')).toBe(true);
+    expect(md).toContain(SYNAPSE_INSTRUCTIONS);
+    expect(count(md)).toBe(1);
+    expect(read('AGENTS.md')).toBe('');
+  });
+
+  it('refreshes an outdated block in place', async () => {
+    const { runSetup, SYNAPSE_INSTRUCTIONS } = await import('../src/setup.js');
+    writeFileSync(path.join(root(), 'AGENTS.md'), 'before\n\n<!-- synapse:start -->\nold text\n<!-- synapse:end -->\n\nafter\n');
+    runSetup('codex', opts());
+    expect(read('AGENTS.md')).toBe(`before\n\n<!-- synapse:start -->\n${SYNAPSE_INSTRUCTIONS}\n<!-- synapse:end -->\n\nafter\n`);
+  });
+
+  it('writes AGENTS.md for Cursor, Codex and Devin', async () => {
+    const { runSetup } = await import('../src/setup.js');
+    runSetup('cursor', opts());
+    expect(count(read('AGENTS.md'))).toBe(1);
+  });
+
+  it('keeps one copy when both Claude Code and Devin are set up, in either order', async () => {
+    const { runSetup } = await import('../src/setup.js');
+    runSetup('claude', opts());
+    const r = runSetup('devin', opts());
+    expect(read('AGENTS.md')).toBe('');
+    expect(r.changes.join('\n')).toContain('Devin CLI also reads');
+  });
+
+  it('imports AGENTS.md from CLAUDE.md when AGENTS.md already has the block', async () => {
+    const { runSetup } = await import('../src/setup.js');
+    writeFileSync(path.join(root(), 'CLAUDE.md'), '# Notes\n');
+    runSetup('devin', opts());
+    runSetup('claude', opts());
+    runSetup('claude', opts());
+    expect(read('CLAUDE.md')).toBe('# Notes\n\n@AGENTS.md\n');
+    expect(count(read('AGENTS.md'))).toBe(1);
+  });
+
+  it('writes nothing with --global, --no-instructions or --dry-run', async () => {
+    const { runSetup } = await import('../src/setup.js');
+    expect(runSetup('claude', opts({ global: true })).notes.join('\n')).toContain('synapse instructions');
+    runSetup('codex', opts({ instructions: false }));
+    const dry = runSetup('claude', opts({ dryRun: true }));
+    expect(dry.changes.join('\n')).toContain('would write');
+    expect(read('CLAUDE.md')).toBe('');
+    expect(read('AGENTS.md')).toBe('');
+  });
+});

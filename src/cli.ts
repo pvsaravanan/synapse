@@ -42,7 +42,9 @@ Usage: synapse <command> [options]
   stats | projects                Counts for this project / all projects
   export [--out FILE]             Export this project's memories as JSON
   import <file> [--project ID]    Import an export bundle
-  setup <claude|cursor|codex|devin> [--global] [--dry-run] [--allow-tools (devin)]\n                                  Register the MCP server + lifecycle hooks with an agent
+  setup <claude|cursor|codex|devin> [--global] [--dry-run] [--allow-tools (devin)] [--no-instructions]
+                                  Register the MCP server + hooks, and add memory instructions to CLAUDE.md / AGENTS.md
+  instructions                    Print the memory instructions setup adds (for a global CLAUDE.md / AGENTS.md)
   doctor                          Diagnose environment
 
 Env: SYNAPSE_HOME (default ~/.synapse), SYNAPSE_DB, SYNAPSE_MODE, SYNAPSE_HOOK_INJECT=full|minimal|silent
@@ -61,7 +63,7 @@ async function main(): Promise<void> {
       count: { type: 'string' }, since: { type: 'string' }, summary: { type: 'string' }, archive: { type: 'boolean' },
       out: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, scope: { type: 'string' }, text: { type: 'string' },
       applies: { type: 'string' }, evidence: { type: 'string' }, reason: { type: 'string' }, state: { type: 'string' }, query: { type: 'string' },
-      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, 'allow-tools': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, 'allow-tools': { type: 'boolean' }, 'no-instructions': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     },
   });
   const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : undefined);
@@ -105,7 +107,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (cmd === 'setup') return setup(pos[0], Boolean(v.global), Boolean(v['dry-run']), Boolean(v['allow-tools']));
+  if (cmd === 'setup') return setup(pos[0], Boolean(v.global), Boolean(v['dry-run']), Boolean(v['allow-tools']), !v['no-instructions']);
+  if (cmd === 'instructions') {
+    const { SYNAPSE_INSTRUCTIONS } = await import('./setup.js');
+    console.log(SYNAPSE_INSTRUCTIONS);
+    return;
+  }
   if (cmd === 'doctor') return doctor();
 
   const { getDb } = await import('./db.js');
@@ -289,7 +296,7 @@ async function main(): Promise<void> {
   }
 }
 
-async function setup(agent: string | undefined, global: boolean, dryRun: boolean, allowTools = false): Promise<void> {
+async function setup(agent: string | undefined, global: boolean, dryRun: boolean, allowTools = false, instructions = true): Promise<void> {
   const { AGENTS, isAgentId } = await import('./agents.js');
   if (!isAgentId(agent)) {
     console.error(`Usage: synapse setup <${AGENTS.join('|')}> [--global] [--dry-run]`);
@@ -306,6 +313,7 @@ async function setup(agent: string | undefined, global: boolean, dryRun: boolean
     script: fileURLToPath(import.meta.url),
     useAgentCli: true,
     allowTools,
+    instructions,
   });
   console.log(`synapse setup ${agent}${global ? ' --global' : ''}${dryRun ? ' (dry run)' : ''}`);
   for (const c of report.changes) console.log(`  • ${c}`);
