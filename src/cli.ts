@@ -28,6 +28,14 @@ Usage: synapse <command> [options]
   session start|end [--summary "..."]
   checkpoint [list] [--session ID] [--limit N] | checkpoint show <id>
                                   Compaction checkpoints, newest first
+  lt list [--state proposed|approved|archived|superseded] [--query Q]
+  lt show <id>
+  lt add --kind semantic|procedural|episodic --title "..." --text "..." [--scope project|user]
+         [--applies "when ..."] [--evidence a,b] [--approve --reason "..."]
+  lt promote <memory-id> --kind K [--scope S] [--approve --reason "..."]
+  lt approve|archive <id> --reason "..."
+  lt supersede <old-id> <new-id> --reason "..."
+                                  Reviewed long-term memory (only approved items reach briefs)
   retention [--archive]           Memory health and archiving
   stats | projects                Counts for this project / all projects
   export [--out FILE]             Export this project's memories as JSON
@@ -49,7 +57,9 @@ async function main(): Promise<void> {
       type: { type: 'string' }, entity: { type: 'string' }, title: { type: 'string' }, narrative: { type: 'string' },
       topic: { type: 'string' }, facts: { type: 'string' }, files: { type: 'string' }, status: { type: 'string' },
       count: { type: 'string' }, since: { type: 'string' }, summary: { type: 'string' }, archive: { type: 'boolean' },
-      out: { type: 'string' }, session: { type: 'string' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, 'allow-tools': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+      out: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, scope: { type: 'string' }, text: { type: 'string' },
+      applies: { type: 'string' }, evidence: { type: 'string' }, reason: { type: 'string' }, state: { type: 'string' }, query: { type: 'string' },
+      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, 'allow-tools': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     },
   });
   const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : undefined);
@@ -186,6 +196,40 @@ async function main(): Promise<void> {
       }
       const rows = s.listCheckpoints(db, project.id, { sessionId: str('session'), limit: Number(str('limit') ?? 20) });
       console.log(rows.map((c) => `#${c.id}  ${when(c.createdAt)}  ${c.sessionId.slice(0, 8)}  ${s.checkpointText(c).slice(0, 160)}`).join('\n') || 'No checkpoints.');
+      break;
+    }
+    case 'lt': {
+      const lt = await import('./longterm.js');
+      const sub = pos[0] ?? 'list';
+      const id = Number(pos[1]);
+      const reason = str('reason') ?? '';
+      const kind = (str('kind') ?? 'semantic') as never;
+      const scope = (str('scope') ?? 'project') as never;
+      if (sub === 'list') {
+        const state = (str('state') ?? 'all') as never;
+        const items = lt.listLongTerm(db, project.id, { state, query: str('query'), limit: Number(str('limit') ?? 50) });
+        console.log(items.map((i) => lt.ltLine(i, 120)).join('\n') || 'No long-term memories.');
+      } else if (sub === 'show') {
+        const i = lt.getLongTerm(db, project.id, id);
+        console.log(i ? lt.ltDetail(i) : 'Not found.');
+      } else if (sub === 'add' || sub === 'promote') {
+        const r = sub === 'promote'
+          ? lt.promoteToLongTerm(db, project.id, id, { kind, scope, applicability: str('applies'), proposedBy: 'manual' })
+          : lt.proposeLongTerm(db, {
+            projectId: project.id, kind, scope, title: str('title') ?? '', body: str('text') ?? '',
+            applicability: str('applies'), evidence: list('evidence'), proposedBy: 'manual',
+          });
+        // A person at the CLI is the reviewer: --approve with --reason approves in one step.
+        const item = v.approve && r.action === 'proposed' ? lt.reviewLongTerm(db, project.id, r.item.id, 'approve', reason) : r.item;
+        console.log(`${r.action === 'exists' ? 'exists' : item.state}: ${lt.ltLine(item)}`);
+      } else if (sub === 'approve' || sub === 'archive') {
+        console.log(`${sub === 'approve' ? 'approved' : 'archived'}: ${lt.ltLine(lt.reviewLongTerm(db, project.id, id, sub, reason))}`);
+      } else if (sub === 'supersede') {
+        lt.supersedeLongTerm(db, project.id, id, Number(pos[2]), reason);
+        console.log(`LT${id} superseded by LT${pos[2]}.`);
+      } else {
+        throw new Error('usage: synapse lt list|show|add|promote|approve|archive|supersede (see synapse help)');
+      }
       break;
     }
     case 'retention': {

@@ -19,6 +19,7 @@ Full documentation: [docs/](docs/README.md) — [getting started](docs/getting-s
   - capture edits and significant or failing commands as down-ranked *candidates*
   - keep a checkpoint at every context compaction, and lead the brief with it when the session resumes
   - auto-summarize the session at end
+- **Reviewed long-term memory:** facts, procedures and events approved with a recorded reason. Only approved items reach the brief, and `user`-scope items carry across projects.
 - **Secret redaction** before every write
 - **No native dependencies:** uses Node's built-in `node:sqlite`
 
@@ -93,6 +94,7 @@ Lite mode (default):
 | `synapse_resolve` | Mark memories done or obsolete |
 | `synapse_feedback` | helpful / conflicted / outdated / corrected → adjusts ranking |
 | `synapse_qualify` | Promote hook-captured candidates |
+| `synapse_lt_propose` / `synapse_lt_approve` / `synapse_lt_archive` / `synapse_lt_list` | Reviewed long-term memory. Approving always asks you, even in auto or bypass mode (Claude Code). |
 | `synapse_session_start` / `synapse_session_end` | Session lifecycle and handoff summaries |
 | `synapse_suggest_topic_key` | A stable key for evolving topics |
 | `synapse_retention` | Memory health and archiving |

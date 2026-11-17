@@ -148,6 +148,24 @@ Search, briefs and browsing show only `active` memories unless you ask for anoth
 
 **Candidates** come from hooks and are visible but down-ranked. They never appear as cautions in a brief. `synapse_qualify` promotes the ones worth keeping.
 
+## Reviewed long-term memory
+
+Observations are cheap and plentiful. **Long-term memory** is a small, curated layer on top: things worth knowing in many future sessions, each one explicitly approved with a recorded reason. Only approved items reach the brief.
+
+| Kind | Holds | Example |
+|---|---|---|
+| `semantic` | a stable fact | "The API is stateless; auth is JWT" |
+| `procedural` | how to do something | "Release: build, test, tag only after CI is green" |
+| `episodic` | a notable event | "1.2.0 was tagged before CI finished" |
+
+**Scope.** `project` items stay in the project they were proposed in. `user` items are portable: they appear in every project's brief. Use `user` only for personal preferences the user actually stated.
+
+**Lifecycle.** An item starts `proposed`, from an agent (`synapse_lt_propose`), a person (`synapse lt add`), or by promoting an existing memory (`fromMemoryId` / `synapse lt promote`), in which case that memory becomes its evidence. Review moves it to `approved` or `archived`. Superseding replaces an approved item with a newer one, which keeps the history and points the old item at its replacement. Every review action needs a reason.
+
+**Who approves.** You do. Agents can propose and archive freely, but `synapse_lt_approve` is marked as requiring user interaction, so Claude Code asks you on every call in every permission mode, including accept-edits, auto and bypass. Allow rules don't skip it, and where no prompt is possible (`claude -p`) the call is denied. Other agents ask through their normal MCP permission prompt; a broad allow rule there would skip it, so Devin's `--allow-tools` leaves `synapse_lt_approve` out. From the terminal, `synapse lt approve` is the human path. The brief notes how many proposals are waiting, and `synapse lt list --state proposed` shows them.
+
+Proposals whose title matches a live item in the same scope return the existing item instead of creating a duplicate. Text and evidence go through secret redaction.
+
 ## Sessions
 
 A session groups the work of one agent run:
@@ -183,14 +201,17 @@ List them with `synapse checkpoint`, or read one in full with `synapse checkpoin
 Sections, all trimmed to fit the budget:
 
 - **Checkpoint:** only when resuming a session after compaction; its latest checkpoint.
+- **Long-term:** approved long-term items (this project's and user-scope), task matches first.
 - **Start here:** files from the most relevant memories, ranked. Each memory's weight is split across its files, so one wide change can't flood the list, and only files that still exist are shown.
-- **Relevant memories:** search hits for the task.
+- **Relevant memories:** search hits for the task. Hook-captured candidates are left out (they still count toward Start here), as are memories already shown through an approved long-term item.
 - **Cautions:** the most relevant qualified memories of the lens's caution types.
 - **In progress:** memories with an unfinished `progress`.
 - **Last session:** the latest handoff summary (from an earlier session, when resuming).
 - **Verify:** lens-specific checks, such as "Add/extend a regression test".
 
-On a project with no memories yet, the brief says so plainly, so the agent doesn't keep searching.
+When long-term proposals are waiting, a line at the end says how many.
+
+On a project with no memories yet, the brief says so plainly, so the agent doesn't keep searching. User-scope long-term items still appear.
 
 ## Git memory
 

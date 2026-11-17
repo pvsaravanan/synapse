@@ -9,8 +9,9 @@ Lite mode (the default) exposes 14 tools. Full mode (`--mode full` or `SYNAPSE_M
 1. **Starting non-trivial work:** call `synapse_project_context` with the user's actual task, and read its "Start here" files first.
 2. **When history would help:** call `synapse_search`, then `synapse_detail` on the ids that look relevant.
 3. **After learning something durable:** call `synapse_store`, or `synapse_store_reasoning` for the "why".
-4. **When work is done or a memory is obsolete:** call `synapse_resolve`.
-5. **At the end:** call `synapse_session_end` with a handoff summary.
+4. **When something deserves to outlive many sessions:** call `synapse_lt_propose`. Approving with `synapse_lt_approve` always asks the user.
+5. **When work is done or a memory is obsolete:** call `synapse_resolve`.
+6. **At the end:** call `synapse_session_end` with a handoff summary.
 
 Current code and the user's request always take precedence over memory.
 
@@ -113,6 +114,48 @@ Adjusts future ranking. `outdated` also resolves the memory.
 | `ids` | number[] |
 
 Promotes hook-captured `candidate` memories to `qualified`.
+
+### `synapse_lt_propose`
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `kind` | `semantic` \| `procedural` \| `episodic` | required |
+| `title`, `body` | string | required unless `fromMemoryId` is given |
+| `scope` | `project` \| `user` | default `project`; `user` shows it in every project |
+| `applicability` | string | when it applies, e.g. "when publishing a release" |
+| `evidence` | string[] | memory ids, commits, files or quotes |
+| `fromMemoryId` | number | promote an existing memory; it becomes the evidence |
+
+Creates a `proposed` long-term item. Proposals don't reach the brief until approved.
+
+### `synapse_lt_approve`
+
+| Parameter | Type |
+|---|---|
+| `id` | number |
+| `reason` | string (required) |
+| `supersedes` | number, optional: an approved item this one replaces |
+
+Approves a proposal so it reaches the brief. With `supersedes`, it also retires the item it replaces.
+
+**You confirm every call.** The tool is marked `_meta["anthropic/requiresUserInteraction"]`, so Claude Code shows its permission prompt on every call in every permission mode (manual, accept-edits, auto and bypass), with no "don't ask again" option. Allow rules such as `mcp__synapse__*` don't skip it. Where no prompt can be shown (`claude -p`, `dontAsk` mode), the call is denied and the item stays proposed. Other agents ignore the marker and use their normal MCP permission prompt (`synapse setup devin --allow-tools` leaves this tool out of the rules it adds, so Devin keeps asking).
+
+### `synapse_lt_archive`
+
+| Parameter | Type |
+|---|---|
+| `id` | number |
+| `reason` | string (required) |
+
+Rejects a proposal, or retires an approved item that's no longer true. No special prompt.
+
+### `synapse_lt_list`
+
+| Parameter | Type |
+|---|---|
+| `state` | `proposed` \| `approved` \| `archived` \| `superseded` \| `all` (default `approved`) |
+| `query` | string, optional full-text filter |
+| `limit` | number |
 
 ### `synapse_suggest_topic_key`
 

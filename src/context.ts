@@ -8,6 +8,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { DB } from './db.js';
 import { indexLine } from './disclosure.js';
+import { approvedForBrief, ltLine, pendingLongTermCount } from './longterm.js';
 import { relevance } from './retention.js';
 import { search } from './search.js';
 import { checkpointText, latestCheckpoint, recentSessions } from './sessions.js';
@@ -79,22 +80,33 @@ export function buildProjectContext(
   // Resuming a session (e.g. after compaction): its latest checkpoint leads the brief.
   const checkpoint = opts.sessionId ? latestCheckpoint(db, opts.sessionId) : undefined;
   if (checkpoint) lines.push('', '## Checkpoint', `- ${checkpoint.createdAt.slice(0, 16).replace('T', ' ')}: ${clip(checkpointText(checkpoint), 600)}`);
+  // Reviewed long-term memory (approved only), including portable user-scope items.
+  const longTerm = approvedForBrief(db, project.id, task, 5);
+  const pending = pendingLongTermCount(db, project.id);
+  const pendingNote = pending ? `${pending} long-term proposal(s) await review: synapse lt list --state proposed` : '';
   if (Number(total) === 0) {
+    if (longTerm.length) lines.push('', '## Long-term', ...longTerm.map((i) => `- ${ltLine(i, 160)}`));
+    if (pendingNote) lines.push('', pendingNote);
     lines.push('', 'No memories stored for this project yet (fresh project). Store decisions, gotchas and fixes as you go.');
     const text = lines.join('\n');
     return { lens: lens.id, text, tokens: estimateTokens(text), memoryIds: [], startFiles: [] };
   }
 
-  const relevant = task.trim()
-    ? search(db, { query: task, projectId: project.id, limit: 8 }).filter((h) => h.lexical > 0.05).map((h) => h.observation)
+  const matches = task.trim()
+    ? search(db, { query: task, projectId: project.id, limit: 16 }).filter((h) => h.lexical > 0.05).map((h) => h.observation)
     : [];
+  // Hook-captured candidates are unreviewed logs: they still point at files, but are not listed as memories.
+  const fileSources = matches.slice(0, 8);
+  // Memories already shown through an approved long-term item are not repeated.
+  const promoted = new Set(longTerm.map((i) => i.sourceObservationId).filter((id): id is number => id != null));
+  const relevant = matches.filter((o) => o.admissionState !== 'candidate' && !promoted.has(o.id)).slice(0, 8);
 
   // Cautions: highest-relevance qualified memories of the lens' caution types.
   const pool = listObservations(db, { projectId: project.id, type: lens.cautionTypes, includeCandidates: false, limit: 200 });
   const ctx = scoringContexts(db, pool.map((o) => o.id));
   const relevantIds = new Set(relevant.map((o) => o.id));
   const cautions = pool
-    .filter((o) => !relevantIds.has(o.id))
+    .filter((o) => !relevantIds.has(o.id) && !promoted.has(o.id))
     .map((o) => ({ o, s: relevance(o, ctx.get(o.id)) }))
     .sort((a, b) => b.s - a.s)
     .slice(0, 4)
@@ -103,8 +115,8 @@ export function buildProjectContext(
   // Start-here files: frequency-weighted from relevant memories, only if they still exist.
   const fileScore = new Map<string, number>();
   // A memory's weight is split across its files, so one wide change can't flood the list.
-  relevant.forEach((o, rank) => {
-    const share = (relevant.length - rank) / Math.max(1, o.filesModified.length);
+  fileSources.forEach((o, rank) => {
+    const share = (fileSources.length - rank) / Math.max(1, o.filesModified.length);
     for (const f of o.filesModified) fileScore.set(f, (fileScore.get(f) ?? 0) + share);
   });
   const startFiles = [...fileScore.entries()]
@@ -120,6 +132,7 @@ export function buildProjectContext(
     .slice(0, 3);
 
   const sections: [string, string[]][] = [
+    ['Long-term', longTerm.map((i) => `- ${ltLine(i, 160)}`)],
     ['Start here', startFiles.map((f) => `- ${f}`)],
     ['Relevant memories', relevant.map((o) => `- ${indexLine(o)}`)],
     ['Cautions', cautions.map((o) => `- ${indexLine(o)}`)],
@@ -140,6 +153,7 @@ export function buildProjectContext(
     }
     if (block.length > 2) lines.push(...block);
   }
+  if (pendingNote) lines.push('', pendingNote);
   lines.push('', `${total} active memories. Use synapse_detail for full records; current code wins over memory.`);
 
   const memoryIds = [...relevant, ...cautions].map((o) => o.id);

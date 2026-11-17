@@ -12,7 +12,7 @@ Commands that work on memory use the project of the **current directory** (see [
 |---|---|
 | `synapse serve [--mode lite\|full]` | Start the stdio MCP server |
 | `synapse hook [--agent claude\|cursor\|codex\|devin]` | Handle one agent hook event read as JSON from stdin, and reply in that agent's format. Always exits 0 |
-| `synapse setup <claude\|cursor\|codex\|devin> [--global] [--dry-run] [--allow-tools]` | Install hooks and register the MCP server with an agent ([details](agents.md)). `--allow-tools` (Devin only) pre-approves Synapse's own tools in your user-level Devin permissions |
+| `synapse setup <claude\|cursor\|codex\|devin> [--global] [--dry-run] [--allow-tools]` | Install hooks and register the MCP server with an agent ([details](agents.md)). `--allow-tools` (Devin only) pre-approves Synapse's own tools, except `synapse_lt_approve`, in your user-level Devin permissions |
 | `synapse doctor` | Check Node, SQLite/FTS5, database path, project detection and git |
 | `synapse version` | Print the version |
 
@@ -45,12 +45,26 @@ Commands that work on memory use the project of the **current directory** (see [
 | `synapse checkpoint [--session ID] [--limit N]` | List compaction checkpoints, newest first |
 | `synapse checkpoint show <id>` | Show one checkpoint in full (Synapse's and the agent's summaries) |
 
+## Long-term memory
+
+| Command | Description |
+|---|---|
+| `synapse lt list [--state S] [--query Q]` | List long-term items visible here (all states by default) |
+| `synapse lt show <id>` | Show one item with its state, review reason and evidence |
+| `synapse lt add --kind K --title "…" --text "…" [--scope user] [--applies "…"] [--evidence a,b]` | Propose an item |
+| `synapse lt promote <memory-id> --kind K [--scope user]` | Propose an existing memory; it becomes the evidence |
+| `synapse lt approve <id> --reason "…"` | Approve; only approved items reach the brief |
+| `synapse lt archive <id> --reason "…"` | Archive (reject a proposal, or retire an approved item) |
+| `synapse lt supersede <old> <new> --reason "…"` | Replace an approved item with a newer one |
+
+`add` and `promote` take `--approve --reason "…"` to propose and approve in one step. Kinds: `semantic`, `procedural`, `episodic`.
+
 ## Maintenance and portability
 
 | Command | Description |
 |---|---|
 | `synapse retention [--archive]` | Show retention zones; archive expired memories |
-| `synapse export [--out FILE]` | Write this project's observations, sessions and checkpoints as JSON (stdout by default) |
+| `synapse export [--out FILE]` | Write this project's observations, sessions, checkpoints and long-term items as JSON (stdout by default) |
 | `synapse import <file> [--project ID]` | Import a bundle into this project or another. Topic and duplicate rules apply, so re-importing is safe |
 
 ## Examples

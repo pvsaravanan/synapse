@@ -92,6 +92,42 @@ CREATE TABLE IF NOT EXISTS checkpoints (
 CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(sessionId, id);
 CREATE INDEX IF NOT EXISTS idx_checkpoints_project ON checkpoints(projectId, id);
 
+CREATE TABLE IF NOT EXISTS long_term (
+  id                  INTEGER PRIMARY KEY,
+  projectId           TEXT NOT NULL,
+  scope               TEXT NOT NULL DEFAULT 'project',
+  kind                TEXT NOT NULL,
+  title               TEXT NOT NULL,
+  body                TEXT NOT NULL,
+  applicability       TEXT,
+  evidence            TEXT NOT NULL DEFAULT '[]',
+  state               TEXT NOT NULL DEFAULT 'proposed',
+  reason              TEXT,
+  supersededBy        INTEGER,
+  sourceObservationId INTEGER,
+  proposedBy          TEXT NOT NULL DEFAULT 'agent',
+  createdAt           TEXT NOT NULL,
+  reviewedAt          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_long_term_project ON long_term(projectId, state);
+CREATE INDEX IF NOT EXISTS idx_long_term_scope ON long_term(scope, state);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS long_term_fts USING fts5(
+  title, body, applicability,
+  content='long_term', content_rowid='id',
+  tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS long_term_fts_ai AFTER INSERT ON long_term BEGIN
+  INSERT INTO long_term_fts(rowid, title, body, applicability) VALUES (new.id, new.title, new.body, new.applicability);
+END;
+CREATE TRIGGER IF NOT EXISTS long_term_fts_ad AFTER DELETE ON long_term BEGIN
+  INSERT INTO long_term_fts(long_term_fts, rowid, title, body, applicability) VALUES ('delete', old.id, old.title, old.body, old.applicability);
+END;
+CREATE TRIGGER IF NOT EXISTS long_term_fts_au AFTER UPDATE OF title, body, applicability ON long_term BEGIN
+  INSERT INTO long_term_fts(long_term_fts, rowid, title, body, applicability) VALUES ('delete', old.id, old.title, old.body, old.applicability);
+  INSERT INTO long_term_fts(rowid, title, body, applicability) VALUES (new.id, new.title, new.body, new.applicability);
+END;
+
 CREATE TABLE IF NOT EXISTS graph_entities (
   projectId  TEXT NOT NULL,
   name       TEXT NOT NULL,

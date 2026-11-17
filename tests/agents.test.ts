@@ -398,7 +398,7 @@ describe('Devin CLI real payloads (captured from devin 3000.12.57)', () => {
 });
 
 describe('setup devin --allow-tools', () => {
-  it('appends only the synapse rule to the USER config (never a project permissions block), opt-in, idempotent', async () => {
+  it('adds per-tool synapse rules (not the approval gate) to the USER config (never a project permissions block), opt-in, idempotent', async () => {
     const { setupDevin } = await import('../src/setup.js');
     const home = mkdtempSync(path.join(os.tmpdir(), 'syn-home-'));
     const base = { global: false, dryRun: false, cwd: dir, home, node: '/n', script: '/s/cli.js', useAgentCli: false };
@@ -412,9 +412,33 @@ describe('setup devin --allow-tools', () => {
     setupDevin({ ...base, allowTools: true });
     const cfg = JSON.parse(readFileSync(userCfg, 'utf8'));
     expect(cfg.theme_mode).toBe('dark');
-    expect(cfg.permissions).toEqual({ allow: ['Exec(node)', 'Write(/private/tmp)', 'mcp__synapse__*'], deny: ['Exec(rm -rf)'] });
+    expect(cfg.permissions.deny).toEqual(['Exec(rm -rf)']);
+    const allow: string[] = cfg.permissions.allow;
+    expect(allow.slice(0, 2)).toEqual(['Exec(node)', 'Write(/private/tmp)']);
+    expect(allow).toContain('mcp__synapse__synapse_store');
+    expect(allow).toContain('mcp__synapse__synapse_lt_propose');
+    expect(allow).toContain('mcp__synapse__read_graph');
+    // The approval gate keeps asking: never pre-approved, and no wildcard that would cover it.
+    expect(allow).not.toContain('mcp__synapse__synapse_lt_approve');
+    expect(allow).not.toContain('mcp__synapse__*');
+    expect(new Set(allow).size).toBe(allow.length);
     const root = detectProject(dir).rootPath;
     expect(existsSync(path.join(root, '.devin', 'config.local.json'))).toBe(false);
     expect(existsSync(path.join(root, '.devin', 'config.json'))).toBe(false);
+  });
+
+  it('replaces the old wildcard rule and stale tool rules, keeping the user\'s own', async () => {
+    const { setupDevin } = await import('../src/setup.js');
+    const home = mkdtempSync(path.join(os.tmpdir(), 'syn-home-'));
+    const userCfg = path.join(home, '.config', 'devin', 'config.json');
+    mkdirSync(path.dirname(userCfg), { recursive: true });
+    writeFileSync(userCfg, JSON.stringify({ permissions: { allow: ['Exec(git)', 'mcp__synapse__*', 'mcp__synapse__gone_tool', 'mcp__other__x'] } }));
+    const r = setupDevin({ global: false, dryRun: false, cwd: dir, home, node: '/n', script: '/s/cli.js', useAgentCli: false, allowTools: true });
+    const allow: string[] = JSON.parse(readFileSync(userCfg, 'utf8')).permissions.allow;
+    expect(allow.slice(0, 2)).toEqual(['Exec(git)', 'mcp__other__x']);
+    expect(allow).not.toContain('mcp__synapse__*');
+    expect(allow).not.toContain('mcp__synapse__gone_tool');
+    expect(allow).not.toContain('mcp__synapse__synapse_lt_approve');
+    expect(r.notes.join('\n')).toContain('asks you again');
   });
 });

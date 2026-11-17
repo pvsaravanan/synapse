@@ -3,10 +3,22 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { toolMode, VERSION, type ToolMode } from './config.js';
 import { buildProjectContext } from './context.js';
-import { getDb, type DB } from './db.js';
+import { getDb, openDatabase, type DB } from './db.js';
 import { formatDetail, formatIndex, formatTimeline, indexLine } from './disclosure.js';
 import { ingestCommits } from './git.js';
 import * as graph from './graph.js';
+import {
+  getLongTerm,
+  listLongTerm,
+  LT_KINDS,
+  LT_SCOPES,
+  LT_STATES,
+  ltLine,
+  promoteToLongTerm,
+  proposeLongTerm,
+  reviewLongTerm,
+  supersedeLongTerm,
+} from './longterm.js';
 import { archiveExpired, exportProject, retentionReport } from './maintenance.js';
 import { detectProject } from './project.js';
 import { search } from './search.js';
@@ -37,6 +49,17 @@ export function suggestTopicKey(type: string, title: string, entityName?: string
   return [family[type] ?? 'notes', entityName ? slug(entityName) : '', slug(title)].filter(Boolean).join('/');
 }
 
+/** Tools that must always ask the user (Claude Code honors the marker; other agents must be configured not to pre-approve them). */
+export const GATED_TOOLS = ['synapse_lt_approve'];
+const REQUIRES_USER = 'anthropic/requiresUserInteraction';
+const toolNameRegistry = new WeakMap<McpServer, string[]>();
+
+/** Every tool name the server registers in a mode (full = all). */
+export function toolNames(mode: ToolMode = 'full'): string[] {
+  const server = createServer({ db: openDatabase(':memory:'), mode, project: { id: 'x', name: 'x', rootPath: process.cwd() } });
+  return [...(toolNameRegistry.get(server) ?? [])];
+}
+
 export function createServer(opts: { db?: DB; project?: ProjectInfo; mode?: ToolMode } = {}): McpServer {
   const db = opts.db ?? getDb();
   let project: ProjectInfo = opts.project ?? detectProject(process.env.SYNAPSE_PROJECT_ROOT || process.cwd());
@@ -44,6 +67,13 @@ export function createServer(opts: { db?: DB; project?: ProjectInfo; mode?: Tool
   const sessionId = () => activeSession(db, project.id)?.id;
 
   const server = new McpServer({ name: 'synapse', version: VERSION });
+  const names: string[] = [];
+  const register = server.registerTool.bind(server) as (...args: unknown[]) => unknown;
+  server.registerTool = ((...args: unknown[]) => {
+    names.push(args[0] as string);
+    return register(...args);
+  }) as typeof server.registerTool;
+  toolNameRegistry.set(server, names);
 
   server.registerTool(
     'synapse_store',
@@ -257,6 +287,99 @@ export function createServer(opts: { db?: DB; project?: ProjectInfo; mode?: Tool
       inputSchema: { ids: z.array(z.number().int()).min(1) },
     },
     async ({ ids }) => text(`Qualified ${ids.filter((id) => promoteObservation(db, id)).length} memories.`),
+  );
+
+  server.registerTool(
+    'synapse_lt_propose',
+    {
+      title: 'Propose Long-term Memory',
+      description:
+        'Propose a reviewed long-term memory: something worth knowing in many future sessions, not a one-off note. ' +
+        'Kinds: semantic (stable fact), procedural (how to do something), episodic (notable event). ' +
+        'scope "user" makes it portable across all projects (use only for personal preferences the user stated). ' +
+        'Pass fromMemoryId to promote an existing memory (it becomes the evidence). Proposals are not shown in briefs until approved.',
+      inputSchema: {
+        kind: z.enum(LT_KINDS),
+        title: z.string().optional(),
+        body: z.string().optional(),
+        scope: z.enum(LT_SCOPES).optional(),
+        applicability: z.string().optional().describe('When this applies, e.g. "when publishing a release"'),
+        evidence: z.array(z.string()).optional().describe('Memory ids (#12), commits, files or quotes that back it'),
+        fromMemoryId: z.number().int().optional(),
+      },
+    },
+    async ({ kind, title, body, scope, applicability, evidence, fromMemoryId }) => {
+      try {
+        const r = fromMemoryId != null
+          ? promoteToLongTerm(db, project.id, fromMemoryId, { kind, scope, applicability, proposedBy: 'agent' })
+          : proposeLongTerm(db, { projectId: project.id, kind, title: title ?? '', body: body ?? '', scope, applicability, evidence, proposedBy: 'agent' });
+        return text(`${r.action === 'exists' ? 'Already exists' : 'Proposed'}: ${ltLine(r.item)}\nIt reaches briefs once the user approves it (synapse_lt_approve asks them, or \`synapse lt approve ${r.item.id}\`).`);
+      } catch (e) {
+        return fail((e as Error).message);
+      }
+    },
+  );
+
+  server.registerTool(
+    'synapse_lt_approve',
+    {
+      title: 'Approve Long-term Memory',
+      description:
+        'Approve a proposed long-term memory so it reaches briefs; pass `supersedes` to retire an approved item it replaces. ' +
+        'The user confirms every call in a permission prompt (Claude Code shows it in every permission mode), so call this only ' +
+        'when you want the user to decide, and put their reason in `reason`.',
+      inputSchema: {
+        id: z.number().int(),
+        reason: z.string().min(1),
+        supersedes: z.number().int().optional().describe('An approved item this one replaces'),
+      },
+      // Claude Code prompts on every call to this tool in every permission mode; allow rules can't skip it.
+      _meta: { [REQUIRES_USER]: true },
+    },
+    async ({ id, reason, supersedes }) => {
+      try {
+        const item = getLongTerm(db, project.id, id);
+        if (!item) return fail(`Long-term item LT${id} not found`);
+        const approved = item.state === 'approved' ? item : reviewLongTerm(db, project.id, id, 'approve', reason);
+        if (supersedes != null) supersedeLongTerm(db, project.id, supersedes, id, reason);
+        return text(`Approved: ${ltLine(approved)}${supersedes != null ? `\nLT${supersedes} superseded by LT${id}.` : ''}`);
+      } catch (e) {
+        return fail((e as Error).message);
+      }
+    },
+  );
+
+  server.registerTool(
+    'synapse_lt_archive',
+    {
+      title: 'Archive Long-term Memory',
+      description: 'Archive a long-term memory: reject a proposal, or retire an approved item that is no longer true. A reason is required.',
+      inputSchema: { id: z.number().int(), reason: z.string().min(1) },
+    },
+    async ({ id, reason }) => {
+      try {
+        return text(`Archived: ${ltLine(reviewLongTerm(db, project.id, id, 'archive', reason))}`);
+      } catch (e) {
+        return fail((e as Error).message);
+      }
+    },
+  );
+
+  server.registerTool(
+    'synapse_lt_list',
+    {
+      title: 'List Long-term Memory',
+      description: 'List long-term memories visible in this project (its own plus user-scope), newest first. Filter by state or a full-text query.',
+      inputSchema: {
+        state: z.enum([...LT_STATES, 'all']).optional(),
+        query: z.string().optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+    },
+    async ({ state, query, limit }) => {
+      const items = listLongTerm(db, project.id, { state: state ?? 'approved', query, limit: limit ?? 20 });
+      return text(items.length ? items.map((i) => `- ${ltLine(i)}`).join('\n') : 'No long-term memories match.');
+    },
   );
 
   server.registerTool(

@@ -10,6 +10,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import path from 'node:path';
 import type { AgentId } from './agents.js';
 import { detectProject } from './project.js';
+import { GATED_TOOLS, toolNames } from './server.js';
 
 export interface SetupOptions {
   global: boolean;
@@ -20,7 +21,7 @@ export interface SetupOptions {
   script: string;
   /** Run the agent's own CLI (claude mcp add). Disabled in tests. */
   useAgentCli?: boolean;
-  /** Devin: pre-approve Synapse's MCP tools (permissions.allow "mcp__synapse__*"). Opt-in. */
+  /** Devin: pre-approve Synapse's MCP tools except the approval gate (permissions.allow). Opt-in. */
   allowTools?: boolean;
 }
 
@@ -194,7 +195,14 @@ export function setupCodex(o: SetupOptions): SetupReport {
 
 // ── Devin CLI ────────────────────────────────────────────────────────────
 
-const DEVIN_ALLOW_RULE = 'mcp__synapse__*';
+const DEVIN_RULE_PREFIX = 'mcp__synapse__';
+/** Older setups allowed every Synapse tool with one wildcard, which also pre-approved the approval gate. */
+const DEVIN_LEGACY_WILDCARD = `${DEVIN_RULE_PREFIX}*`;
+
+/** One allow rule per Synapse tool, leaving out the tools that must always ask the user. */
+export function devinAllowRules(): string[] {
+  return toolNames('full').filter((n) => !GATED_TOOLS.includes(n)).map((n) => DEVIN_RULE_PREFIX + n);
+}
 
 const DEVIN_EVENTS: Record<string, number> = { SessionStart: 10, UserPromptSubmit: 10, PostToolUse: 10, PostCompaction: 10, SessionEnd: 10 };
 
@@ -287,12 +295,19 @@ export function setupDevin(o: SetupOptions): SetupReport {
   if (o.allowTools) {
     const cfg = readJson(permFile);
     cfg.permissions ??= {};
-    const allow: unknown[] = Array.isArray(cfg.permissions.allow) ? cfg.permissions.allow : [];
-    if (!allow.includes(DEVIN_ALLOW_RULE)) allow.push(DEVIN_ALLOW_RULE);
+    const rules = devinAllowRules();
+    const current = new Set([...rules, ...GATED_TOOLS.map((n) => DEVIN_RULE_PREFIX + n)]);
+    const existing: unknown[] = Array.isArray(cfg.permissions.allow) ? cfg.permissions.allow : [];
+    // Keep the user's own rules; drop the old wildcard and rules for Synapse tools that no longer exist.
+    const allow = existing.filter((r) => typeof r !== 'string' || !r.startsWith(DEVIN_RULE_PREFIX) || current.has(r));
+    for (const r of rules) if (!allow.includes(r)) allow.push(r);
     cfg.permissions.allow = allow;
     writeFile(permFile, JSON.stringify(cfg, null, 2) + '\n', o, report, 'permissions');
+    if (existing.includes(DEVIN_LEGACY_WILDCARD)) report.notes.push(`Replaced "${DEVIN_LEGACY_WILDCARD}" with one rule per tool, so approving long-term memory asks you again.`);
+    const gatedAllowed = GATED_TOOLS.map((n) => DEVIN_RULE_PREFIX + n).filter((r) => allow.includes(r));
+    if (gatedAllowed.length) report.notes.push(`${gatedAllowed.join(', ')} is pre-approved in ${permFile}; remove it if Devin should ask you before approving long-term memory.`);
   } else {
-    report.notes.push(`Devin asks before each Synapse tool call; non-interactive "devin -p" runs reject them. Re-run with --allow-tools to pre-approve only Synapse's tools (adds "${DEVIN_ALLOW_RULE}" to ${permFile}).`);
+    report.notes.push(`Devin asks before each Synapse tool call; non-interactive "devin -p" runs reject them. Re-run with --allow-tools to pre-approve Synapse's tools in ${permFile} (all except synapse_lt_approve, which keeps asking).`);
   }
 
   report.notes.push('Start a new Devin CLI session; check the synapse server is listed in its MCP servers.');

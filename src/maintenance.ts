@@ -36,13 +36,16 @@ export interface ExportBundle {
   sessions: Record<string, unknown>[];
   /** Compaction checkpoints (absent in older bundles). */
   checkpoints?: Record<string, unknown>[];
+  /** Long-term memories proposed in this project, including its user-scope ones (absent in older bundles). */
+  longTerm?: Record<string, unknown>[];
 }
 
 export function exportProject(db: DB, projectId: string): ExportBundle {
   const observations = (db.prepare('SELECT * FROM observations WHERE projectId = ? ORDER BY id').all(projectId) as Record<string, unknown>[]).map(rowToObservation);
   const sessions = db.prepare('SELECT * FROM sessions WHERE projectId = ? ORDER BY startedAt').all(projectId) as Record<string, unknown>[];
   const checkpoints = db.prepare('SELECT * FROM checkpoints WHERE projectId = ? ORDER BY id').all(projectId) as Record<string, unknown>[];
-  return { format: 'synapse-export', version: 1, exportedAt: new Date().toISOString(), projectId, observations, sessions, checkpoints };
+  const longTerm = db.prepare('SELECT * FROM long_term WHERE projectId = ? ORDER BY id').all(projectId) as Record<string, unknown>[];
+  return { format: 'synapse-export', version: 1, exportedAt: new Date().toISOString(), projectId, observations, sessions, checkpoints, longTerm };
 }
 
 /** Import a bundle into a (possibly different) project. Dedup/topic rules apply. */
