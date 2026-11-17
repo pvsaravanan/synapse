@@ -5,6 +5,7 @@ import { toolMode, VERSION, type ToolMode } from './config.js';
 import { buildProjectContext } from './context.js';
 import { getDb, openDatabase, type DB } from './db.js';
 import { formatDetail, formatIndex, formatTimeline, indexLine } from './disclosure.js';
+import { changesFor } from './freshness.js';
 import { ingestCommits } from './git.js';
 import * as graph from './graph.js';
 import {
@@ -29,6 +30,7 @@ import {
   projectStats,
   recordAccess,
   recordFeedback,
+  refreshSessionHashes,
   setStatus,
   storeObservation,
   timeline,
@@ -101,7 +103,7 @@ export function createServer(opts: { db?: DB; project?: ProjectInfo; mode?: Tool
       },
     },
     async (args) => {
-      const r = storeObservation(db, { ...args, projectId: project.id, sessionId: sessionId(), source: 'agent' });
+      const r = storeObservation(db, { ...args, projectId: project.id, sessionId: sessionId(), source: 'agent', rootPath: project.rootPath });
       const verb = { created: 'Stored', 'updated-topic': 'Updated topic', 'merged-duplicate': 'Merged into existing' }[r.action];
       return text(`${verb} ${indexLine(r.observation)}`);
     },
@@ -144,6 +146,7 @@ export function createServer(opts: { db?: DB; project?: ProjectInfo; mode?: Tool
         topicKey: a.topicKey,
         sessionId: sessionId(),
         concepts: ['reasoning'],
+        rootPath: project.rootPath,
       });
       return text(`Stored reasoning ${indexLine(r.observation)}`);
     },
@@ -179,7 +182,8 @@ export function createServer(opts: { db?: DB; project?: ProjectInfo; mode?: Tool
             : `No memories matched "${a.query}". ${active} active of ${stats.total} total memories; try broader terms, status "all", or an empty query to browse.`,
         );
       }
-      return text(formatIndex(hits, { query: a.query, global, maxTokens: a.maxTokens }));
+      const changes = changesFor(project.rootPath, project.id, hits.map((h) => h.observation));
+      return text(formatIndex(hits, { query: a.query, global, maxTokens: a.maxTokens, changes }));
     },
   );
 
@@ -194,7 +198,8 @@ export function createServer(opts: { db?: DB; project?: ProjectInfo; mode?: Tool
       const obs = getObservations(db, ids);
       if (obs.length === 0) return fail(`No memories found for ids ${ids.join(', ')}`);
       recordAccess(db, obs.map((o) => o.id));
-      return text(obs.map(formatDetail).join('\n\n---\n\n'));
+      const changes = changesFor(project.rootPath, project.id, obs);
+      return text(obs.map((o) => formatDetail(o, changes.get(o.id))).join('\n\n---\n\n'));
     },
   );
 
@@ -260,6 +265,7 @@ export function createServer(opts: { db?: DB; project?: ProjectInfo; mode?: Tool
     },
     async ({ summary }) => {
       const s = activeSession(db, project.id) ?? startSession(db, project.id);
+      refreshSessionHashes(db, s.id, project.rootPath);
       endSession(db, s.id, summary);
       return text(`Session ${s.id} closed with handoff summary.`);
     },
@@ -269,13 +275,17 @@ export function createServer(opts: { db?: DB; project?: ProjectInfo; mode?: Tool
     'synapse_feedback',
     {
       title: 'Memory Feedback',
-      description: 'Record whether a memory helped, conflicted with current code, was outdated (auto-resolves) or was corrected. Adjusts future ranking.',
-      inputSchema: { id: z.number().int(), signal: z.enum(['helpful', 'conflicted', 'outdated', 'corrected']), note: z.string().optional() },
+      description:
+        'Record whether a memory helped, was verified against current code (clears its "changed since" flag), conflicted with current code, ' +
+        'was outdated (auto-resolves) or was corrected. Adjusts future ranking.',
+      inputSchema: { id: z.number().int(), signal: z.enum(['helpful', 'verified', 'conflicted', 'outdated', 'corrected']), note: z.string().optional() },
     },
     async ({ id, signal, note }) => {
-      if (getObservations(db, [id]).length === 0) return fail(`Memory #${id} not found`);
-      recordFeedback(db, id, signal, note);
-      return text(`Recorded ${signal} feedback on #${id}.`);
+      const [o] = getObservations(db, [id]);
+      if (!o) return fail(`Memory #${id} not found`);
+      // Re-hashing only makes sense against this project's files.
+      recordFeedback(db, id, signal, note, o.projectId === project.id ? project.rootPath : undefined);
+      return text(`Recorded ${signal} feedback on #${id}.${signal === 'verified' ? ' Its file hashes now match current code.' : ''}`);
     },
   );
 

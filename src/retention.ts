@@ -28,7 +28,7 @@ const IMMUNITY_ACCESS = 3;
 
 export interface ScoringContext {
   accessCount?: number;
-  /** Net feedback: +1 per helpful, -1 per conflicted/outdated/corrected. */
+  /** Net feedback: +1 per helpful/verified, -1 per conflicted/outdated/corrected. */
   feedbackWeight?: number;
 }
 

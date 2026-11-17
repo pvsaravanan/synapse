@@ -7,7 +7,8 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { DB } from './db.js';
-import { indexLine } from './disclosure.js';
+import { indexLine, STALE_HINT } from './disclosure.js';
+import { changesFor } from './freshness.js';
 import { approvedForBrief, ltLine, pendingLongTermCount } from './longterm.js';
 import { relevance } from './retention.js';
 import { search } from './search.js';
@@ -131,11 +132,15 @@ export function buildProjectContext(
     .filter((o) => o.progress && o.progress.status !== 'completed')
     .slice(0, 3);
 
+  // Memories whose files changed since they were stored are flagged, not hidden.
+  const changes = changesFor(project.rootPath, project.id, [...relevant, ...cautions]);
+  const line = (o: Observation) => `- ${indexLine(o, changes.get(o.id))}`;
+
   const sections: [string, string[]][] = [
     ['Long-term', longTerm.map((i) => `- ${ltLine(i, 160)}`)],
     ['Start here', startFiles.map((f) => `- ${f}`)],
-    ['Relevant memories', relevant.map((o) => `- ${indexLine(o)}`)],
-    ['Cautions', cautions.map((o) => `- ${indexLine(o)}`)],
+    ['Relevant memories', relevant.map(line)],
+    ['Cautions', cautions.map(line)],
     ['In progress', inProgress.map((o) => `- ${o.progress!.feature}: ${o.progress!.status}${o.progress!.completion != null ? ` ${o.progress!.completion}%` : ''} (#${o.id})`)],
     ['Last session', sessions.map((s) => `- ${(s.endedAt ?? s.startedAt).slice(0, 10)}: ${s.summary}`)],
     ['Verify', lens.verify.map((v) => `- ${v}`)],
@@ -154,6 +159,7 @@ export function buildProjectContext(
     if (block.length > 2) lines.push(...block);
   }
   if (pendingNote) lines.push('', pendingNote);
+  if (changes.size && lines.some((l) => l.includes('changed since:'))) lines.push('', STALE_HINT);
   lines.push('', `${total} active memories. Use synapse_detail for full records; current code wins over memory.`);
 
   const memoryIds = [...relevant, ...cautions].map((o) => o.id);

@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS observations (
   relatedEntities TEXT NOT NULL DEFAULT '[]',
   admissionState  TEXT NOT NULL DEFAULT 'qualified',
   valueCategory   TEXT,
-  hasCausalLanguage INTEGER NOT NULL DEFAULT 0
+  hasCausalLanguage INTEGER NOT NULL DEFAULT 0,
+  fileHashes      TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_obs_project ON observations(projectId, status);
 CREATE INDEX IF NOT EXISTS idx_obs_topic ON observations(projectId, topicKey);
@@ -179,7 +180,23 @@ export function openDatabase(file: string = databasePath()): DB {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+/** Columns added after the first release; CREATE TABLE IF NOT EXISTS leaves older databases without them. */
+function migrate(db: DB): void {
+  const cols = new Set((db.prepare('PRAGMA table_info(observations)').all() as { name: string }[]).map((c) => c.name));
+  if (!cols.has('fileHashes')) addColumn(db, "ALTER TABLE observations ADD COLUMN fileHashes TEXT NOT NULL DEFAULT '{}'");
+}
+
+/** Hooks and MCP servers can open an old database at the same moment; whoever loses the race finds the column already there. */
+function addColumn(db: DB, sql: string): void {
+  try {
+    db.exec(sql);
+  } catch (e) {
+    if (!/duplicate column/i.test((e as Error).message)) throw e;
+  }
 }
 
 /** Process-wide database handle. */

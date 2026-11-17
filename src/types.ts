@@ -68,6 +68,8 @@ export interface Observation {
   admissionState: AdmissionState;
   valueCategory?: ValueCategory;
   hasCausalLanguage: boolean;
+  /** Content hash of each named file when the memory was stored (project-relative path -> hash; '' = absent). */
+  fileHashes: Record<string, string>;
 }
 
 export interface StoreInput {
@@ -88,6 +90,8 @@ export interface StoreInput {
   relatedEntities?: string[];
   admissionState?: AdmissionState;
   valueCategory?: ValueCategory;
+  /** Project root: when given, the named files are hashed so later changes flag the memory as possibly outdated. */
+  rootPath?: string;
 }
 
 export type StoreAction = 'created' | 'updated-topic' | 'merged-duplicate';
@@ -146,4 +150,5 @@ export interface SearchHit {
   relevance: number;
 }
 
-export type FeedbackSignal = 'helpful' | 'conflicted' | 'outdated' | 'corrected';
+/** verified = checked against current code and still true (also re-records its file hashes). */
+export type FeedbackSignal = 'helpful' | 'verified' | 'conflicted' | 'outdated' | 'corrected';

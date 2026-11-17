@@ -19,7 +19,7 @@ import type { DB } from './db.js';
 import { detectProject } from './project.js';
 import { addCheckpoint, checkpointText, endSession, getSession, latestCheckpoint, reopenSession, startSession } from './sessions.js';
 import { redactSecrets } from './secrets.js';
-import { listObservations, storeObservation } from './store.js';
+import { listObservations, refreshSessionHashes, storeObservation } from './store.js';
 import type { ObservationType, ProjectInfo } from './types.js';
 
 export interface HookInput {
@@ -212,6 +212,7 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
           title: `${tool === 'Write' ? 'Wrote' : 'Edited'} ${rel}`,
           narrative: snippet ? `Latest change excerpt:\n${snippet}` : `${tool} on ${rel}`,
           filesModified: [rel],
+          rootPath: project.rootPath,
           sessionId,
           source: 'hook',
           admissionState: 'candidate',
@@ -219,6 +220,7 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
           // One rolling record per file per session instead of one per edit.
           topicKey: `hook/file/${rel}/${sessionId ?? 'nosession'}`,
         });
+        if (sessionId) refreshSessionHashes(db, sessionId, project.rootPath, rel);
         return {};
       }
 
@@ -263,6 +265,7 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
 
     case 'SessionEnd': {
       if (sessionId && getSession(db, sessionId)?.status === 'active') {
+        refreshSessionHashes(db, sessionId, project.rootPath);
         endSession(db, sessionId, autoSummary(db, project, sessionId));
       }
       return {};

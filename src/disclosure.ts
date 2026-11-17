@@ -5,6 +5,7 @@
  *   L3 detail   – full narrative, facts, files, provenance        -> synapse_detail
  * Agents read cheap indexes first and expand only what they need.
  */
+import { changeNote, type FileChange } from './freshness.js';
 import { estimateTokens } from './store.js';
 import { TYPE_LABEL, type Observation, type SearchHit } from './types.js';
 
@@ -12,22 +13,26 @@ function shortDate(iso: string): string {
   return iso.slice(0, 10);
 }
 
-export function indexLine(o: Observation): string {
+/** `changes`: files changed since the memory was stored (see freshness.ts), flagged so the reader re-checks. */
+export function indexLine(o: Observation, changes: FileChange[] = []): string {
   const flags = [
     o.status !== 'active' ? o.status : '',
     o.admissionState === 'candidate' ? 'candidate' : '',
     o.revisionCount > 1 ? `rev${o.revisionCount}` : '',
+    changeNote(changes),
   ].filter(Boolean);
   return `#${o.id} ${shortDate(o.updatedAt ?? o.createdAt)} [${TYPE_LABEL[o.type] ?? o.type}] ${o.entityName}: ${o.title}` +
     (flags.length ? ` (${flags.join(', ')})` : '') + ` ~${o.tokens}t`;
 }
 
-export function formatIndex(hits: SearchHit[], opts: { query?: string; global?: boolean; maxTokens?: number } = {}): string {
+export function formatIndex(
+  hits: SearchHit[], opts: { query?: string; global?: boolean; maxTokens?: number; changes?: Map<number, FileChange[]> } = {},
+): string {
   const lines: string[] = [];
   let used = 0;
   let omitted = 0;
   for (const h of hits) {
-    const line = (opts.global ? `[${h.observation.projectId}] ` : '') + indexLine(h.observation);
+    const line = (opts.global ? `[${h.observation.projectId}] ` : '') + indexLine(h.observation, opts.changes?.get(h.observation.id));
     const t = estimateTokens(line);
     if (opts.maxTokens && used + t > opts.maxTokens) {
       omitted++;
@@ -39,12 +44,15 @@ export function formatIndex(hits: SearchHit[], opts: { query?: string; global?: 
   const header = opts.query ? `Synapse results for "${opts.query}" (${lines.length})` : `Synapse memories (${lines.length})`;
   const footer = [
     omitted ? `${omitted} more omitted by token budget.` : '',
+    opts.changes?.size ? STALE_HINT : '',
     'Expand with synapse_detail { ids: [...] } or synapse_timeline { anchorId }.',
   ].filter(Boolean);
   return [header, ...lines, '', ...footer].join('\n');
 }
 
-export function formatDetail(o: Observation): string {
+export const STALE_HINT = '"changed since" = files edited after the memory was stored: check current code before relying on it, then synapse_feedback "verified" or "outdated".';
+
+export function formatDetail(o: Observation, changes: FileChange[] = []): string {
   const out: string[] = [];
   out.push(`#${o.id} [${TYPE_LABEL[o.type] ?? o.type}] ${o.title}`);
   out.push(`entity: ${o.entityName} · project: ${o.projectId} · status: ${o.status} · source: ${o.source}` +
@@ -55,6 +63,9 @@ export function formatDetail(o: Observation): string {
   out.push('', o.narrative || '(no narrative)');
   if (o.facts.length) out.push('', 'Facts:', ...o.facts.map((f) => `- ${f}`));
   if (o.filesModified.length) out.push('', `Files: ${o.filesModified.join(', ')}`);
+  if (changes.length) {
+    out.push(`Changed since stored: ${changes.map((c) => `${c.file} (${c.change})`).join(', ')}. Possibly outdated: check current code.`);
+  }
   if (o.concepts.length) out.push(`Concepts: ${o.concepts.join(', ')}`);
   if (o.commitHash) out.push(`Commit: ${o.commitHash}`);
   if (o.relatedCommits.length) out.push(`Related commits: ${o.relatedCommits.join(', ')}`);

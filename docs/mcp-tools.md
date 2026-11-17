@@ -7,7 +7,7 @@ Lite mode (the default) exposes 14 tools. Full mode (`--mode full` or `SYNAPSE_M
 ## Recommended agent workflow
 
 1. **Starting non-trivial work:** call `synapse_project_context` with the user's actual task, and read its "Start here" files first.
-2. **When history would help:** call `synapse_search`, then `synapse_detail` on the ids that look relevant.
+2. **When history would help:** call `synapse_search`, then `synapse_detail` on the ids that look relevant. A memory flagged `changed since: …` names files edited after it was stored: check current code, then send `synapse_feedback` with `verified` or `outdated`.
 3. **After learning something durable:** call `synapse_store`, or `synapse_store_reasoning` for the "why".
 4. **When something deserves to outlive many sessions:** call `synapse_lt_propose`. Approving with `synapse_lt_approve` always asks the user.
 5. **When work is done or a memory is obsolete:** call `synapse_resolve`.
@@ -70,6 +70,8 @@ Ranked search that returns an L1 index.
 | `maxTokens` | number | | Token budget for the index |
 | `scope` | `project`\|`global` | `project` | |
 
+Hits whose files changed since they were stored are flagged `changed since: <files>`, followed by a hint line (project scope only; see [file freshness](concepts.md#file-freshness)).
+
 When nothing matches, the reply says whether the project is **fresh** (no memories at all, so don't search again this turn) or whether nothing matched the query. In the second case it gives the active and total counts.
 
 ### `synapse_detail`
@@ -77,6 +79,8 @@ When nothing matches, the reply says whether the project is **fresh** (no memori
 | Parameter | Type | Notes |
 |---|---|---|
 | `ids` | number[] (1–20) | Returns full records and counts as an access for ranking |
+
+A record whose files changed since it was stored adds a line such as `Changed since stored: src/limit.ts (modified)`.
 
 ### `synapse_timeline`
 
@@ -102,10 +106,10 @@ Pass `active` to reopen a memory. Only ids in the bound project are changed.
 | Parameter | Type |
 |---|---|
 | `id` | number |
-| `signal` | `helpful`\|`conflicted`\|`outdated`\|`corrected` |
+| `signal` | `helpful`\|`verified`\|`conflicted`\|`outdated`\|`corrected` |
 | `note` | string (optional) |
 
-Adjusts future ranking. `outdated` also resolves the memory.
+Adjusts future ranking. `outdated` also resolves the memory. `verified` means you checked the memory against current code and it still holds: it counts like `helpful` and re-records its file hashes, which clears a `changed since` flag.
 
 ### `synapse_qualify`
 
@@ -193,7 +197,7 @@ Returns the new session id and up to three previous handoff summaries.
 |---|---|
 | `summary` | string |
 
-Closes the active session (or creates and closes one) with the handoff summary.
+Closes the active session (or creates and closes one) with the handoff summary. First, files that this session edited (as captured by hooks) are re-hashed in its memories, so the session's own edits don't flag them.
 
 ## Maintenance
 

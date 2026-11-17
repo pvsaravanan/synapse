@@ -33,6 +33,8 @@ Commands that work on memory use the project of the **current directory** (see [
 |---|---|
 | `synapse store --type T --title "…" [--entity E] [--narrative "…"] [--topic K] [--facts a,b] [--files a,b]` | Store a memory with `source: manual`. `--entity` defaults to `project` and `--type` to `discovery` |
 | `synapse resolve <id…> [--status resolved\|archived\|active]` | Change status |
+| `synapse stale [--limit N]` | List active memories whose files changed since they were stored ([file freshness](concepts.md#file-freshness)) |
+| `synapse verify <id…>` | Mark memories as checked against current code; re-records their file hashes and clears the flag |
 | `synapse ingest-git [--count N] [--since DATE]` | Import commits (default 20) |
 
 ## Sessions

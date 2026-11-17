@@ -88,7 +88,22 @@ A typical flow: search → pick two or three ids → detail. An index line looks
 #14 2026-11-16 [GOTCHA] billing: Stripe webhooks need raw body (rev2) ~41t
 ```
 
-Flags show `resolved`/`archived` status, `candidate` (auto-captured), and `revN` when the memory has been revised.
+Flags show `resolved`/`archived` status, `candidate` (auto-captured), `revN` when the memory has been revised, and `changed since: <files>` when files it names have changed since it was stored (see below).
+
+## File freshness
+
+A memory about code can go out of date when the code changes. When a memory names files (`filesModified`), Synapse records a short content hash of each one at store time. Later, if a file's content differs, the memory is **flagged, not hidden**:
+
+```
+#14 2026-11-16 [GOTCHA] billing: Stripe webhooks need raw body (changed since: src/webhooks.ts) ~41t
+```
+
+- **Where it shows:** search results, `synapse_detail` (with each file marked `modified`, `deleted` or `created`), the brief's relevant memories and cautions, and `synapse stale`. A flagged reply carries a one-line hint to check current code before relying on it.
+- **Clearing the flag:** after checking, send `synapse_feedback` with `verified` (still true: the hashes are re-recorded) or `outdated` (resolves it). From the terminal: `synapse verify <id>` or `synapse resolve <id>`. Re-storing under the same `topicKey` also refreshes the hashes of the files it names.
+- **A session's own edits don't count.** Agents often store a decision and then implement it. When a hook captures an edit, memories from the same session that name that file are re-hashed. When the session ends (`SessionEnd` or `synapse_session_end`), files the session edited are re-hashed once more, which also covers a later shell edit (`sed`, a script) to those files. Changes to any other file still flag, whether you made them in your editor or another agent did, and so do edits in a later session.
+- **Limits of that rule.** Hooks only see edit and write tools, so a file the session changed *only* through shell commands flags its own memories (one check to clear). Agents without hooks have no edit records, so their own edits flag too. A memory the session made wrong later in the same session isn't flagged. With two agents on one project, a memory stored over MCP is tagged with the project's most recent active session, which may be the other agent's.
+- **What's tracked:** only files inside the project, up to 25 per memory. Files over 2 MB are compared by size. A file that didn't exist when the memory was stored is flagged as `created` once it appears.
+- **Not tracked:** git-ingested and imported memories, and memories stored before this feature. `verified` starts tracking an untracked memory from that moment.
 
 ## Search ranking
 
@@ -130,7 +145,7 @@ relevance = baseImportance × e^(−ageDays / retentionDays) × accessBoost × f
 **Boosts:**
 
 - **Access:** each `synapse_detail` read adds 10%, capped at ×2.
-- **Feedback:** each `helpful` signal adds 0.15 and each `conflicted`, `outdated` or `corrected` signal subtracts 0.15, clamped to ×0.4–×1.6. An `outdated` signal also resolves the memory.
+- **Feedback:** each `helpful` or `verified` signal adds 0.15 and each `conflicted`, `outdated` or `corrected` signal subtracts 0.15, clamped to ×0.4–×1.6. An `outdated` signal also resolves the memory.
 
 **Immunity.** Critical memories, `core` memories, and memories read three or more times never fall below 0.5 relevance and are never archived.
 
@@ -203,7 +218,7 @@ Sections, all trimmed to fit the budget:
 - **Checkpoint:** only when resuming a session after compaction; its latest checkpoint.
 - **Long-term:** approved long-term items (this project's and user-scope), task matches first.
 - **Start here:** files from the most relevant memories, ranked. Each memory's weight is split across its files, so one wide change can't flood the list, and only files that still exist are shown.
-- **Relevant memories:** search hits for the task. Hook-captured candidates are left out (they still count toward Start here), as are memories already shown through an approved long-term item.
+- **Relevant memories:** search hits for the task. Hook-captured candidates are left out (they still count toward Start here), as are memories already shown through an approved long-term item. Memories whose files changed since they were stored are marked `changed since: …`.
 - **Cautions:** the most relevant qualified memories of the lens's caution types.
 - **In progress:** memories with an unfinished `progress`.
 - **Last session:** the latest handoff summary (from an earlier session, when resuming).

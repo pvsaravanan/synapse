@@ -1,4 +1,6 @@
 import type { DB } from './db.js';
+import { hashFile, hashFiles, type FileHashes } from './freshness.js';
+import path from 'node:path';
 import { redactSecrets } from './secrets.js';
 import type {
   FeedbackSignal,
@@ -21,6 +23,16 @@ function now(): string {
 
 function uniq(list: string[] | undefined): string[] {
   return [...new Set((list ?? []).map((s) => s.trim()).filter(Boolean))];
+}
+
+function parseHashes(v: unknown): FileHashes {
+  if (typeof v !== 'string' || !v) return {};
+  try {
+    const parsed = JSON.parse(v);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function parseList(v: unknown): string[] {
@@ -60,6 +72,7 @@ export function rowToObservation(row: Record<string, unknown>): Observation {
     admissionState: (row.admissionState as Observation['admissionState']) ?? 'qualified',
     valueCategory: (row.valueCategory as Observation['valueCategory']) ?? undefined,
     hasCausalLanguage: Boolean(row.hasCausalLanguage),
+    fileHashes: parseHashes(row.fileHashes),
   };
 }
 
@@ -163,6 +176,9 @@ export function storeObservation(db: DB, input: StoreInput): StoreResult {
   const body = [s.title, s.narrative, ...s.facts].join('\n');
   const tokens = estimateTokens(body);
   const causal = CAUSAL.test(body) ? 1 : 0;
+  // Hashes of the files named now; on an update they replace the old hashes for those files.
+  const hashes = input.rootPath ? hashFiles(input.rootPath, s.filesModified) : {};
+  const mergeHashes = (prev: FileHashes) => JSON.stringify({ ...prev, ...hashes });
 
   if (input.topicKey) {
     const existing = db
@@ -173,8 +189,8 @@ export function storeObservation(db: DB, input: StoreInput): StoreResult {
       db.prepare(
         `UPDATE observations SET entityName=?, type=?, title=?, narrative=?, facts=?, filesModified=?, concepts=?,
          tokens=?, updatedAt=?, revisionCount=revisionCount+1, sessionId=COALESCE(?, sessionId), progress=?,
-         relatedCommits=?, relatedEntities=?, hasCausalLanguage=?, admissionState=?, valueCategory=COALESCE(?, valueCategory)
-         WHERE id=?`,
+         relatedCommits=?, relatedEntities=?, hasCausalLanguage=?, admissionState=?, valueCategory=COALESCE(?, valueCategory),
+         fileHashes=? WHERE id=?`,
       ).run(
         s.entityName, input.type, s.title, s.narrative, JSON.stringify(s.facts),
         JSON.stringify(uniq([...prev.filesModified, ...s.filesModified])),
@@ -182,7 +198,7 @@ export function storeObservation(db: DB, input: StoreInput): StoreResult {
         tokens, ts, input.sessionId ?? null, input.progress ? JSON.stringify(input.progress) : null,
         JSON.stringify(uniq([...prev.relatedCommits, ...(input.relatedCommits ?? [])])),
         JSON.stringify(uniq([...prev.relatedEntities, ...(input.relatedEntities ?? [])])),
-        causal, input.admissionState ?? 'qualified', input.valueCategory ?? null, prev.id,
+        causal, input.admissionState ?? 'qualified', input.valueCategory ?? null, mergeHashes(prev.fileHashes), prev.id,
       );
       return { observation: getObservation(db, prev.id)!, action: 'updated-topic' };
     }
@@ -201,8 +217,8 @@ export function storeObservation(db: DB, input: StoreInput): StoreResult {
         const keepNew = s.narrative.length >= o.narrative.length;
         db.prepare(
           `UPDATE observations SET title=?, narrative=?, facts=?, filesModified=?, concepts=?, tokens=?, updatedAt=?,
-           revisionCount=revisionCount+1, admissionState=CASE WHEN ?='qualified' THEN 'qualified' ELSE admissionState END
-           WHERE id=?`,
+           revisionCount=revisionCount+1, admissionState=CASE WHEN ?='qualified' THEN 'qualified' ELSE admissionState END,
+           fileHashes=? WHERE id=?`,
         ).run(
           keepNew ? s.title : o.title,
           keepNew ? s.narrative : o.narrative,
@@ -212,6 +228,7 @@ export function storeObservation(db: DB, input: StoreInput): StoreResult {
           keepNew ? tokens : o.tokens,
           ts,
           input.admissionState ?? 'qualified',
+          mergeHashes(o.fileHashes),
           o.id,
         );
         return { observation: getObservation(db, o.id)!, action: 'merged-duplicate' };
@@ -223,8 +240,8 @@ export function storeObservation(db: DB, input: StoreInput): StoreResult {
     .prepare(
       `INSERT INTO observations (projectId, entityName, type, title, narrative, facts, filesModified, concepts, tokens,
         createdAt, topicKey, sessionId, progress, source, commitHash, relatedCommits, relatedEntities, admissionState,
-        valueCategory, hasCausalLanguage)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        valueCategory, hasCausalLanguage, fileHashes)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       input.projectId, s.entityName, input.type, s.title, s.narrative,
@@ -233,7 +250,7 @@ export function storeObservation(db: DB, input: StoreInput): StoreResult {
       input.progress ? JSON.stringify(input.progress) : null,
       input.source ?? 'agent', input.commitHash ?? null,
       JSON.stringify(uniq(input.relatedCommits)), JSON.stringify(uniq(input.relatedEntities)),
-      input.admissionState ?? 'qualified', input.valueCategory ?? null, causal,
+      input.admissionState ?? 'qualified', input.valueCategory ?? null, causal, JSON.stringify(hashes),
     );
   return { observation: getObservation(db, Number(info.lastInsertRowid))!, action: 'created' };
 }
@@ -268,9 +285,63 @@ export function recordAccess(db: DB, ids: number[]): void {
   for (const id of ids) stmt.run(id, ts);
 }
 
-export function recordFeedback(db: DB, id: number, signal: FeedbackSignal, note?: string): void {
+export function recordFeedback(db: DB, id: number, signal: FeedbackSignal, note?: string, rootPath?: string): void {
   db.prepare('INSERT INTO feedback(observationId, signal, note, createdAt) VALUES(?,?,?,?)').run(id, signal, note ?? null, now());
   if (signal === 'outdated') setStatus(db, [id], 'resolved');
+  if (signal === 'verified' && rootPath) refreshFileHashes(db, id, rootPath);
+}
+
+/**
+ * Re-record a memory's file hashes from current content (after checking it still matches the code).
+ * Covers every file it names, so memories stored before hashing existed start being tracked too.
+ */
+export function refreshFileHashes(db: DB, id: number, rootPath: string): boolean {
+  const o = getObservation(db, id);
+  if (!o) return false;
+  const files = [...new Set([...o.filesModified, ...Object.keys(o.fileHashes)])];
+  db.prepare('UPDATE observations SET fileHashes = ? WHERE id = ?').run(JSON.stringify(hashFiles(rootPath, files)), id);
+  return true;
+}
+
+/**
+ * A session's own edits are part of its work, not drift: re-hash the files its memories name, so storing a
+ * decision and then implementing it doesn't flag the decision. Only files the session itself edited are
+ * re-hashed (`file`, or every file its hook-captured edits name), so changes by you or another agent still flag.
+ */
+export function refreshSessionHashes(db: DB, sessionId: string, rootPath: string, file?: string): number {
+  const edited = new Set(file ? [file] : sessionEditedFiles(db, sessionId));
+  if (edited.size === 0) return 0;
+  const rows = db
+    .prepare("SELECT id, fileHashes FROM observations WHERE sessionId = ? AND fileHashes != '{}'")
+    .all(sessionId) as { id: number; fileHashes: string }[];
+  const update = db.prepare('UPDATE observations SET fileHashes = ? WHERE id = ?');
+  const cache = new Map<string, string>();
+  let changed = 0;
+  for (const r of rows) {
+    const hashes = parseHashes(r.fileHashes);
+    let dirty = false;
+    for (const key of Object.keys(hashes)) {
+      if (!edited.has(key)) continue;
+      if (!cache.has(key)) cache.set(key, hashFile(path.join(rootPath, key)));
+      if (hashes[key] !== cache.get(key)) {
+        hashes[key] = cache.get(key)!;
+        dirty = true;
+      }
+    }
+    if (dirty) {
+      update.run(JSON.stringify(hashes), r.id);
+      changed++;
+    }
+  }
+  return changed;
+}
+
+/** Project-relative files a session edited, from its hook-captured edit records. */
+export function sessionEditedFiles(db: DB, sessionId: string): string[] {
+  const rows = db
+    .prepare("SELECT filesModified FROM observations WHERE sessionId = ? AND source = 'hook' AND type = 'what-changed'")
+    .all(sessionId) as { filesModified: string }[];
+  return [...new Set(rows.flatMap((r) => parseList(r.filesModified)))];
 }
 
 /** Access counts and feedback weights for scoring. */
@@ -286,7 +357,7 @@ export function scoringContexts(db: DB, ids: number[]): Map<number, ScoringConte
   }
   for (const r of db
     .prepare(
-      `SELECT observationId, SUM(CASE WHEN signal = 'helpful' THEN 1 ELSE -1 END) AS w FROM feedback
+      `SELECT observationId, SUM(CASE WHEN signal IN ('helpful', 'verified') THEN 1 ELSE -1 END) AS w FROM feedback
        WHERE observationId IN (${ph}) GROUP BY observationId`,
     )
     .all(...ids) as { observationId: number; w: number }[]) {

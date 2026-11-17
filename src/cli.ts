@@ -24,6 +24,8 @@ Usage: synapse <command> [options]
   detail <id...>                  Show full memories
   timeline <id>                   Show memories around an id
   resolve <id...> [--status resolved|archived|active]
+  stale [--limit N]               Memories whose files changed since they were stored
+  verify <id...>                  Mark memories checked against current code (re-records file hashes)
   ingest-git [--count N] [--since DATE]
   session start|end [--summary "..."]
   checkpoint [list] [--session ID] [--limit N] | checkpoint show <id>
@@ -128,7 +130,9 @@ async function main(): Promise<void> {
         type: list('type') as never,
         status: (str('status') as never) ?? 'active',
       });
-      console.log(hits.length ? disc.formatIndex(hits, { query: pos.join(' '), global: Boolean(v.global) }) : 'No matching memories.');
+      const { changesFor } = await import('./freshness.js');
+      const changes = changesFor(project.rootPath, project.id, hits.map((h) => h.observation));
+      console.log(hits.length ? disc.formatIndex(hits, { query: pos.join(' '), global: Boolean(v.global), changes }) : 'No matching memories.');
       break;
     }
     case 'store': {
@@ -146,13 +150,33 @@ async function main(): Promise<void> {
         filesModified: list('files'),
         topicKey: str('topic'),
         source: 'manual',
+        rootPath: project.rootPath,
       });
       console.log(`${r.action}: ${disc.indexLine(r.observation)}`);
       break;
     }
     case 'detail': {
+      const { changesFor } = await import('./freshness.js');
       const obs = store.getObservations(db, pos.map(Number));
-      console.log(obs.length ? obs.map(disc.formatDetail).join('\n\n---\n\n') : 'Not found.');
+      const changes = changesFor(project.rootPath, project.id, obs);
+      console.log(obs.length ? obs.map((o) => disc.formatDetail(o, changes.get(o.id))).join('\n\n---\n\n') : 'Not found.');
+      break;
+    }
+    case 'stale': {
+      const { staleMemories } = await import('./freshness.js');
+      const stale = staleMemories(db, project, Number(str('limit') ?? 50));
+      console.log(stale.length
+        ? [`Memories whose files changed since they were stored (${stale.length}):`, ...stale.map((x) => disc.indexLine(x.observation, x.changes)),
+          '', 'Check each against current code, then: synapse verify <id> (still true) or synapse resolve <id> (outdated).'].join('\n')
+        : 'No memory has files that changed since it was stored.');
+      break;
+    }
+    case 'verify': {
+      const ids = pos.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+      if (!ids.length) throw new Error('verify needs memory ids');
+      const own = store.getObservations(db, ids).filter((o) => o.projectId === project.id);
+      for (const o of own) store.recordFeedback(db, o.id, 'verified', undefined, project.rootPath);
+      console.log(`Verified ${own.length} memor${own.length === 1 ? 'y' : 'ies'}${own.length < ids.length ? ' (others not found in this project)' : ''}.`);
       break;
     }
     case 'timeline':
