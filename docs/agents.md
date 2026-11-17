@@ -60,10 +60,19 @@ Each agent's events map onto the same behaviour:
 | Record the session's first substantial prompt as its goal | `UserPromptSubmit` | `beforeSubmitPrompt` | `UserPromptSubmit` | `UserPromptSubmit` |
 | Capture file edits | `PostToolUse` (Edit/Write/MultiEdit) | `afterFileEdit` | `PostToolUse` (`apply_patch`, split per file) | `PostToolUse` (`edit`, `write`, `notebook_edit`, `apply_patch`) |
 | Capture significant or failing commands | `PostToolUse` (Bash) | `afterShellExecution` | `PostToolUse` (Bash) | `PostToolUse` (`exec`) |
-| Checkpoint a session summary | `PreCompact` | `preCompact` | `PreCompact` | `PostCompaction` (falls back to Devin's own summary) |
+| Add a compaction checkpoint and refresh the session summary | `PreCompact` | `preCompact` | `PreCompact` | `PostCompaction` (falls back to Devin's own summary) |
 | Close the session with a summary | `SessionEnd` | `sessionEnd` | `SessionEnd` (3-second limit) | `SessionEnd` (not fired in Devin cloud sessions) |
 
-Sessions use the agent's own id: `session_id` for Claude, Codex and Devin, and `conversation_id` for Cursor. They're labelled `claude-code`, `cursor`, `codex` or `devin`.
+Sessions use the agent's own id: `session_id` for Claude, Codex and Devin, and `conversation_id` for Cursor. They're labelled `claude-code`, `cursor`, `codex` or `devin`. Any hook event other than `SessionEnd` for a session that already ended (a resume under the same id) reopens it, so its end summary also covers the work after resuming.
+
+Every compaction records a checkpoint. Whether the agent gets that checkpoint back depends on whether it fires `SessionStart` again after compaction:
+
+| Agent | Resume keeps the session id | `SessionStart` after compaction | Checkpoint shown |
+|---|---|---|---|
+| Claude Code | Yes (`source: resume`), verified | Yes (`source: compact`), verified | After compaction and on resume |
+| Codex | Not documented | Yes (`source: compact`, per OpenAI's hooks docs), not tested | After compaction, if the id is kept |
+| Devin CLI | Yes (`source: resume`), verified on 3000.12.57 | No (`source` is only `startup` or `resume`) | On resume only |
+| Cursor | Not documented | No, per user reports | Not shown; still listed by `synapse checkpoint` |
 
 Devin CLI's payloads were verified against a real run of devin 3000.12.57: `write` sends `file_path` and `content`, `edit` sends `file_path`, `old_string` and `new_string`, and `exec` sends `command` with a `{success, output, error}` result. In that result, `success` only means the tool ran; a failing command still reports `success: true`, with `Exit code: N` in its output, which is what Synapse checks. Other common field names (`path`, `filePath`, `new_str`, `new_source`, `edits`, …) are also accepted, in case Devin's tools change.
 

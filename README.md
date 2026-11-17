@@ -17,6 +17,7 @@ Full documentation: [docs/](docs/README.md) — [getting started](docs/getting-s
 - **Automatic hooks for Claude Code, Cursor, Codex and Devin CLI:**
   - inject a brief at session start
   - capture edits and significant or failing commands as down-ranked *candidates*
+  - keep a checkpoint at every context compaction, and lead the brief with it when the session resumes
   - auto-summarize the session at end
 - **Secret redaction** before every write
 - **No native dependencies:** uses Node's built-in `node:sqlite`

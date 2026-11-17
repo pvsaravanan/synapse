@@ -26,6 +26,8 @@ Usage: synapse <command> [options]
   resolve <id...> [--status resolved|archived|active]
   ingest-git [--count N] [--since DATE]
   session start|end [--summary "..."]
+  checkpoint [list] [--session ID] [--limit N] | checkpoint show <id>
+                                  Compaction checkpoints, newest first
   retention [--archive]           Memory health and archiving
   stats | projects                Counts for this project / all projects
   export [--out FILE]             Export this project's memories as JSON
@@ -47,7 +49,7 @@ async function main(): Promise<void> {
       type: { type: 'string' }, entity: { type: 'string' }, title: { type: 'string' }, narrative: { type: 'string' },
       topic: { type: 'string' }, facts: { type: 'string' }, files: { type: 'string' }, status: { type: 'string' },
       count: { type: 'string' }, since: { type: 'string' }, summary: { type: 'string' }, archive: { type: 'boolean' },
-      out: { type: 'string' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, 'allow-tools': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+      out: { type: 'string' }, session: { type: 'string' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, 'allow-tools': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     },
   });
   const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : undefined);
@@ -165,6 +167,25 @@ async function main(): Promise<void> {
         if (!a) console.log('No active session.');
         else console.log(`Closed ${s.endSession(db, a.id, str('summary'))?.id}`);
       } else console.log(s.recentSessions(db, project.id, 10, false).map((x) => `${x.startedAt.slice(0, 16)} ${x.status} ${x.agent ?? ''} ${x.summary ?? ''}`).join('\n') || 'No sessions.');
+      break;
+    }
+    case 'checkpoint':
+    case 'checkpoints': {
+      const s = await import('./sessions.js');
+      const when = (iso: string) => iso.slice(0, 16).replace('T', ' ');
+      if (pos[0] === 'show') {
+        const c = s.getCheckpoint(db, Number(pos[1]));
+        if (!c || c.projectId !== project.id) {
+          console.log('Not found.');
+          break;
+        }
+        console.log(`Checkpoint #${c.id} — session ${c.sessionId} — ${when(c.createdAt)}`);
+        if (c.summary) console.log(`\nSynapse summary:\n${c.summary}`);
+        if (c.agentSummary) console.log(`\nAgent summary:\n${c.agentSummary}`);
+        break;
+      }
+      const rows = s.listCheckpoints(db, project.id, { sessionId: str('session'), limit: Number(str('limit') ?? 20) });
+      console.log(rows.map((c) => `#${c.id}  ${when(c.createdAt)}  ${c.sessionId.slice(0, 8)}  ${s.checkpointText(c).slice(0, 160)}`).join('\n') || 'No checkpoints.');
       break;
     }
     case 'retention': {

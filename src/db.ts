@@ -81,6 +81,17 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(projectId, startedAt);
 
+CREATE TABLE IF NOT EXISTS checkpoints (
+  id           INTEGER PRIMARY KEY,
+  sessionId    TEXT NOT NULL,
+  projectId    TEXT NOT NULL,
+  createdAt    TEXT NOT NULL,
+  summary      TEXT,
+  agentSummary TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(sessionId, id);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_project ON checkpoints(projectId, id);
+
 CREATE TABLE IF NOT EXISTS graph_entities (
   projectId  TEXT NOT NULL,
   name       TEXT NOT NULL,

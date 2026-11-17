@@ -12,7 +12,7 @@ import { detectProject, normalizeGitRemote } from '../src/project.js';
 import { relevance, retentionZone } from '../src/retention.js';
 import { buildFtsQuery, search } from '../src/search.js';
 import { redactSecrets } from '../src/secrets.js';
-import { endSession, recentSessions, startSession } from '../src/sessions.js';
+import { addCheckpoint, checkpointText, endSession, listCheckpoints, recentSessions, startSession } from '../src/sessions.js';
 import { listObservations, recordFeedback, setStatus, storeObservation, timeline } from '../src/store.js';
 import type { Observation, ProjectInfo } from '../src/types.js';
 
@@ -206,6 +206,76 @@ describe('hooks', () => {
     expect(edit.entityName).toBe('api');
     handleHook(db, { hook_event_name: 'SessionEnd', session_id: sid, cwd: dir });
     expect(recentSessions(db, pid)[0].summary).toMatch(/Goal: Add rate limiting.*src\/api\/limit\.ts/);
+  });
+
+  it('reopens a resumed session so its end summary covers the work after resume', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'syn-resume-'));
+    const sid = 'sess-resume';
+    const write = (f: string) => handleHook(db, { hook_event_name: 'PostToolUse', session_id: sid, cwd: dir, tool_name: 'Write', tool_input: { file_path: path.join(dir, f), content: 'x' } });
+    handleHook(db, { hook_event_name: 'SessionStart', session_id: sid, cwd: dir, source: 'startup' });
+    write('src/a.ts');
+    handleHook(db, { hook_event_name: 'SessionEnd', session_id: sid, cwd: dir });
+    handleHook(db, { hook_event_name: 'SessionStart', session_id: sid, cwd: dir, source: 'resume' });
+    write('src/b.ts');
+    handleHook(db, { hook_event_name: 'SessionEnd', session_id: sid, cwd: dir });
+    const s = recentSessions(db, detectProject(dir).id, 5, false).find((x) => x.id === sid)!;
+    expect(s.status).toBe('completed');
+    expect(s.summary).toContain('src/b.ts');
+
+    // An agent that resumes without firing SessionStart: the first edit reopens the session.
+    write('src/c.ts');
+    expect(recentSessions(db, detectProject(dir).id, 5, false).find((x) => x.id === sid)!.status).toBe('active');
+    handleHook(db, { hook_event_name: 'SessionEnd', session_id: sid, cwd: dir });
+    const again = recentSessions(db, detectProject(dir).id, 5, false).find((x) => x.id === sid)!;
+    expect(again.status).toBe('completed');
+    expect(again.summary).toContain('src/c.ts');
+  });
+
+  it('keeps one checkpoint per compaction and surfaces the latest after compaction', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'syn-cp-'));
+    const sid = 'sess-cp';
+    const pid = detectProject(dir).id;
+    const edit = (f: string) => handleHook(db, { hook_event_name: 'PostToolUse', session_id: sid, cwd: dir, tool_name: 'Write', tool_input: { file_path: path.join(dir, f), content: 'x' } });
+    handleHook(db, { hook_event_name: 'UserPromptSubmit', session_id: sid, cwd: dir, prompt: 'Migrate the billing module to the new API' });
+    edit('src/billing/a.ts');
+    handleHook(db, { hook_event_name: 'PreCompact', session_id: sid, cwd: dir });
+    // Nothing changed: a second compaction adds no duplicate row.
+    handleHook(db, { hook_event_name: 'PreCompact', session_id: sid, cwd: dir });
+    edit('src/billing/b.ts');
+    handleHook(db, { hook_event_name: 'PreCompact', session_id: sid, cwd: dir });
+
+    const cps = listCheckpoints(db, pid, { sessionId: sid });
+    expect(cps).toHaveLength(2);
+    expect(cps[1].summary).toContain('src/billing/a.ts');
+    expect(cps[1].summary).not.toContain('b.ts');
+    expect(cps[0].summary).toContain('src/billing/b.ts');
+
+    const after = handleHook(db, { hook_event_name: 'SessionStart', session_id: sid, cwd: dir, source: 'compact' });
+    expect(after.context).toMatch(/## Checkpoint\n- .*Goal: Migrate the billing module.*src\/billing\/b\.ts/);
+    // A brand-new session does not inherit another session's checkpoint.
+    const fresh = handleHook(db, { hook_event_name: 'SessionStart', session_id: 'other', cwd: dir, source: 'startup' });
+    expect(fresh.context).not.toContain('## Checkpoint');
+  });
+
+  it('stores the agent summary alongside ours, redacted, and shows it in minimal mode', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'syn-cp2-'));
+    const pid = detectProject(dir).id;
+    handleHook(db, { hook_event_name: 'PreCompact', session_id: 's2', cwd: dir, summary: 'Wired webhooks; api_key=sk-abcdef1234567890 next: retries' });
+    const [cp] = listCheckpoints(db, pid);
+    expect(cp.summary).toBeUndefined();
+    expect(cp.agentSummary).toContain('[REDACTED]');
+    expect(checkpointText(cp)).toContain('Wired webhooks');
+    const prev = process.env.SYNAPSE_HOOK_INJECT;
+    process.env.SYNAPSE_HOOK_INJECT = 'minimal';
+    try {
+      const out = handleHook(db, { hook_event_name: 'SessionStart', session_id: 's2', cwd: dir, source: 'compact' });
+      expect(out.context).toMatch(/Last checkpoint \(.*\): Wired webhooks/);
+    } finally {
+      if (prev === undefined) delete process.env.SYNAPSE_HOOK_INJECT;
+      else process.env.SYNAPSE_HOOK_INJECT = prev;
+    }
+    expect(addCheckpoint(db, pid, 's2', { summary: '  ', agentSummary: '' })).toBeUndefined();
+    expect(exportProject(db, pid).checkpoints).toHaveLength(1);
   });
 });
 

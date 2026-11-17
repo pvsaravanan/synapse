@@ -10,7 +10,7 @@ import type { DB } from './db.js';
 import { indexLine } from './disclosure.js';
 import { relevance } from './retention.js';
 import { search } from './search.js';
-import { recentSessions } from './sessions.js';
+import { checkpointText, latestCheckpoint, recentSessions } from './sessions.js';
 import { estimateTokens, listObservations, recordAccess, scoringContexts } from './store.js';
 import type { Observation, ProjectInfo } from './types.js';
 
@@ -68,12 +68,17 @@ export interface ContextBrief {
   startFiles: string[];
 }
 
-export function buildProjectContext(db: DB, project: ProjectInfo, task: string, opts: { maxTokens?: number } = {}): ContextBrief {
+export function buildProjectContext(
+  db: DB, project: ProjectInfo, task: string, opts: { maxTokens?: number; sessionId?: string } = {},
+): ContextBrief {
   const maxTokens = opts.maxTokens ?? 1200;
   const lens = detectLens(task);
   const total = (db.prepare("SELECT COUNT(*) AS n FROM observations WHERE projectId = ? AND status = 'active'").get(project.id) as { n: number }).n;
 
   const lines: string[] = [`# Synapse brief — ${project.name}`, `Task lens: ${lens.id} — ${lens.advice}`];
+  // Resuming a session (e.g. after compaction): its latest checkpoint leads the brief.
+  const checkpoint = opts.sessionId ? latestCheckpoint(db, opts.sessionId) : undefined;
+  if (checkpoint) lines.push('', '## Checkpoint', `- ${checkpoint.createdAt.slice(0, 16).replace('T', ' ')}: ${clip(checkpointText(checkpoint), 600)}`);
   if (Number(total) === 0) {
     lines.push('', 'No memories stored for this project yet (fresh project). Store decisions, gotchas and fixes as you go.');
     const text = lines.join('\n');
@@ -108,7 +113,8 @@ export function buildProjectContext(db: DB, project: ProjectInfo, task: string, 
     .filter((f) => existsSync(path.isAbsolute(f) ? f : path.join(project.rootPath, f)))
     .slice(0, 6);
 
-  const sessions = recentSessions(db, project.id, 1);
+  // When resuming, the current session is covered by its checkpoint; "Last session" means the one before.
+  const sessions = recentSessions(db, project.id, 2).filter((s) => s.id !== opts.sessionId).slice(0, 1);
   const inProgress = listObservations(db, { projectId: project.id, limit: 50, includeCandidates: false })
     .filter((o) => o.progress && o.progress.status !== 'completed')
     .slice(0, 3);
@@ -140,4 +146,8 @@ export function buildProjectContext(db: DB, project: ProjectInfo, task: string, 
   recordAccess(db, relevant.map((o) => o.id));
   const text = lines.join('\n');
   return { lens: lens.id, text, tokens: estimateTokens(text), memoryIds, startFiles };
+}
+
+function clip(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) + '…' : s;
 }

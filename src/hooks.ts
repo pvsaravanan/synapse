@@ -5,7 +5,7 @@
  *   SessionStart     -> inject a task brief as additionalContext
  *   UserPromptSubmit -> record the session's first substantial prompt as its goal (candidate)
  *   PostToolUse      -> capture file edits / significant commands as candidate memories
- *   PreCompact       -> checkpoint an auto-summary onto the session
+ *   PreCompact       -> add a checkpoint row (auto-summary + agent summary) and refresh the session summary
  *   SessionEnd       -> close the session with an auto-summary
  *
  * Auto-captured records are 'candidate' + 'ephemeral': searchable but
@@ -17,7 +17,7 @@ import { hookInjectMode } from './config.js';
 import { buildProjectContext } from './context.js';
 import type { DB } from './db.js';
 import { detectProject } from './project.js';
-import { endSession, getSession, startSession } from './sessions.js';
+import { addCheckpoint, checkpointText, endSession, getSession, latestCheckpoint, reopenSession, startSession } from './sessions.js';
 import { redactSecrets } from './secrets.js';
 import { listObservations, storeObservation } from './store.js';
 import type { ObservationType, ProjectInfo } from './types.js';
@@ -145,17 +145,31 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
   const event = input.hook_event_name ?? '';
   const project = detectProject(input.cwd || process.cwd());
   const sessionId = input.session_id;
-  if (sessionId) startSession(db, project.id, { id: sessionId, agent: SESSION_AGENT[input.agent ?? 'claude'] });
+  if (sessionId) {
+    startSession(db, project.id, { id: sessionId, agent: SESSION_AGENT[input.agent ?? 'claude'] });
+    // Activity on an ended session means the agent resumed it under the same id (Claude Code and Devin do this).
+    // Reopen it on any event, not only SessionStart, so the next SessionEnd summarizes the work after resuming.
+    if (event !== 'SessionEnd') reopenSession(db, sessionId);
+  }
 
   switch (event) {
     case 'SessionStart': {
       const mode = hookInjectMode();
       if (mode === 'silent') return {};
       const hint = 'Synapse memory is available: use synapse_search / synapse_project_context for prior decisions, gotchas and fixes; synapse_store to save durable learnings.';
+      // After compaction or on resume, the same session continues: surface its latest checkpoint.
+      const resumed = input.source === 'compact' || input.source === 'resume';
       let context = hint;
       if (mode === 'full') {
-        const brief = buildProjectContext(db, project, input.source === 'compact' ? 'continue the current task after compaction' : 'continue work on this project', { maxTokens: 700 });
+        const brief = buildProjectContext(db, project, input.source === 'compact' ? 'continue the current task after compaction' : 'continue work on this project', {
+          maxTokens: 700,
+          sessionId: resumed ? sessionId : undefined,
+        });
         context = `${hint}\n\n${brief.text}`;
+      } else if (resumed && sessionId) {
+        // Minimal mode skips the memory brief, but one checkpoint line is what compaction loses.
+        const cp = latestCheckpoint(db, sessionId);
+        if (cp) context = `${hint}\nLast checkpoint (${cp.createdAt.slice(0, 16).replace('T', ' ')}): ${checkpointText(cp).slice(0, 600)}`;
       }
       return { context };
     }
@@ -236,8 +250,12 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
 
     case 'PreCompact': {
       if (sessionId) {
-        // Prefer our structured summary; fall back to the agent's own compaction summary (Devin PostCompaction).
-        const s = autoSummary(db, project, sessionId) ?? (input.summary ? redactSecrets(input.summary.trim()).slice(0, 1500) : undefined);
+        const auto = autoSummary(db, project, sessionId);
+        const agentSummary = typeof input.summary === 'string' ? input.summary : undefined;
+        // Keep every compaction as its own checkpoint row.
+        addCheckpoint(db, project.id, sessionId, { summary: auto, agentSummary });
+        // The session's handoff summary prefers our structured one, falling back to the agent's (Devin PostCompaction).
+        const s = auto ?? (agentSummary?.trim() ? redactSecrets(agentSummary.trim()).slice(0, 1500) : undefined);
         if (s) db.prepare('UPDATE sessions SET summary = ? WHERE id = ?').run(s, sessionId);
       }
       return {};

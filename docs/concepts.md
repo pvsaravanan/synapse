@@ -157,6 +157,14 @@ A session groups the work of one agent run:
 
 With an agent's hooks installed, sessions follow that agent's own session or conversation ids. They close automatically with a generated summary (goal, files touched, memories stored).
 
+### Compaction checkpoints
+
+When an agent compacts its context, its hook records a **checkpoint**: Synapse's generated summary at that moment, plus the agent's own compaction summary when it provides one (Devin). Each compaction adds a new checkpoint; earlier ones are kept, so a long session leaves a trail of how the work progressed. A compaction with nothing new since the last checkpoint adds no row. Checkpoints go through secret redaction like everything else.
+
+When the same session starts again after compaction or on resume (`SessionStart` with `source` `compact` or `resume`), its latest checkpoint leads the injected brief. With `SYNAPSE_HOOK_INJECT=minimal`, a single "Last checkpoint" line is still added. A new session never sees another session's checkpoint.
+
+List them with `synapse checkpoint`, or read one in full with `synapse checkpoint show <id>`. They are included in `synapse export`.
+
 ## The project context brief
 
 `synapse_project_context { task }` is the recommended first call for non-trivial work. It returns a small, bounded brief (1,200 tokens by default) shaped by a **task lens** detected from the task text:
@@ -174,11 +182,12 @@ With an agent's hooks installed, sessions follow that agent's own session or con
 
 Sections, all trimmed to fit the budget:
 
+- **Checkpoint:** only when resuming a session after compaction; its latest checkpoint.
 - **Start here:** files from the most relevant memories, ranked. Each memory's weight is split across its files, so one wide change can't flood the list, and only files that still exist are shown.
 - **Relevant memories:** search hits for the task.
 - **Cautions:** the most relevant qualified memories of the lens's caution types.
 - **In progress:** memories with an unfinished `progress`.
-- **Last session:** the latest handoff summary.
+- **Last session:** the latest handoff summary (from an earlier session, when resuming).
 - **Verify:** lens-specific checks, such as "Add/extend a regression test".
 
 On a project with no memories yet, the brief says so plainly, so the agent doesn't keep searching.

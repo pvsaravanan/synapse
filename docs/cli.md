@@ -42,13 +42,15 @@ Commands that work on memory use the project of the **current directory** (see [
 | `synapse session` | List recent sessions |
 | `synapse session start` | Start a session and print its id |
 | `synapse session end [--summary "…"]` | Close the active session |
+| `synapse checkpoint [--session ID] [--limit N]` | List compaction checkpoints, newest first |
+| `synapse checkpoint show <id>` | Show one checkpoint in full (Synapse's and the agent's summaries) |
 
 ## Maintenance and portability
 
 | Command | Description |
 |---|---|
 | `synapse retention [--archive]` | Show retention zones; archive expired memories |
-| `synapse export [--out FILE]` | Write this project's observations and sessions as JSON (stdout by default) |
+| `synapse export [--out FILE]` | Write this project's observations, sessions and checkpoints as JSON (stdout by default) |
 | `synapse import <file> [--project ID]` | Import a bundle into this project or another. Topic and duplicate rules apply, so re-importing is safe |
 
 ## Examples

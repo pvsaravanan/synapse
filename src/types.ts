@@ -107,6 +107,18 @@ export interface Session {
   agent?: string;
 }
 
+/** A snapshot of session state taken at context compaction; one row per compaction, never overwritten. */
+export interface Checkpoint {
+  id: number;
+  sessionId: string;
+  projectId: string;
+  createdAt: string;
+  /** Synapse's structured summary (goal, files touched, stored memories). */
+  summary?: string;
+  /** The agent's own compaction summary, when it provides one (Devin PostCompaction). */
+  agentSummary?: string;
+}
+
 export interface ProjectInfo {
   id: string;
   name: string;
