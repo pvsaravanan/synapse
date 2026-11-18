@@ -84,6 +84,7 @@ Each agent's events map onto the same behaviour:
 | Capture file edits | `PostToolUse` (Edit/Write/MultiEdit) | `afterFileEdit` | `PostToolUse` (`apply_patch`, split per file) | `PostToolUse` (`edit`, `write`, `notebook_edit`, `apply_patch`) | `postToolUse` (`edit`, `create`, `apply_patch`) | `AfterTool` (`replace`, `write_file`) | `PostToolUse` (`write_to_file`, `replace_file_content`, `multi_replace_file_content`) |
 | Capture significant or failing commands | `PostToolUse` (Bash) | `afterShellExecution` | `PostToolUse` (Bash) | `PostToolUse` (`exec`) | `postToolUse`, `postToolUseFailure` (`bash`) | `AfterTool` (`run_shell_command`) | `PostToolUse` (`run_command`; failure from `error`, no output) |
 | Add a compaction checkpoint and refresh the session summary | `PreCompact` | `preCompact` | `PreCompact` | `PostCompaction` (falls back to Devin's own summary) | `preCompact` | `PreCompress` | Not available |
+| [Remind the agent to store what it learned](#store-reminder) (once per session) | `Stop` → `decision: block` | Not available | `Stop` → `decision: block` (from Codex's docs, not tested) | Not available | Not available | Not available | `Stop` → `decision: continue` (from the docs, not tested) |
 | Close the session with a summary | `SessionEnd` | `sessionEnd` | `SessionEnd` (3-second limit) | `SessionEnd` (not fired in Devin cloud sessions) | `sessionEnd` | `SessionEnd` | `Stop` (reopened by the next prompt) |
 
 Sessions use the agent's own id: `session_id` for Claude, Codex, Devin and Gemini, `sessionId` for Copilot, `conversationId` for Antigravity, and `conversation_id` for Cursor. They're labelled `claude-code`, `cursor`, `codex`, `devin`, `copilot`, `gemini` or `antigravity`. Any hook event other than `SessionEnd` for a session that already ended (a resume under the same id) reopens it, so its end summary also covers the work after resuming.
@@ -121,6 +122,7 @@ The PascalCase events (snake_case payloads with Claude tool names) are understoo
   - build, test, lint, install, deploy or migration commands → `discovery`
   - commands that **failed** → `gotcha`. A failure is a non-zero exit code when the agent reports one (Codex does, and Gemini's `Exit Code: N`), `success: false` or `Exit code: N` (Devin), a non-`success` result or `completed with exit code N` (Copilot), or otherwise a failure-shaped line: `Error:`, `error[…]:`, `file:line: error:`, `file(l,c): error`, `npm ERR!`, `N failed`, a traceback, `command not found`, and so on. Output that merely contains the word "error", such as a grep of source code, doesn't count.
   - trivial commands (`ls`, `cd`, `cat`, `git status`, …) are ignored, unless chained with real work, as in `cd app && npm test`.
+- **Fixes** are detected: when a command passes after the same command failed earlier in the session, and files were edited in between, Synapse records a draft `problem-solution` (`Fixed: npm test`) with the failure output, the files changed and both commands, and resolves the failure record. Commands are matched on what they run, not their exact text: `npm test 2>&1 | tail -30` and `cd app && npm test` both count as `npm test`. A pass with no edits in between (a flaky test, an environment change) isn't a fix. When the agent stores its own `problem-solution` in that session, the drafts for the same files are resolved, since the agent's account of the cause replaces them.
 - **Never captured:** read-only tools, Synapse's own MCP tools, commands that run `synapse`, and output that is Synapse's own search results.
 
 Everything captured is a down-ranked **candidate**:
@@ -131,6 +133,14 @@ Everything captured is a down-ranked **candidate**:
 - It decays four times faster than an explicit memory.
 
 Promote the useful ones with `synapse_qualify`.
+
+### Store reminder
+
+Hooks capture what happened, but only the agent knows what it learned, and agents rarely store memories unprompted. So when a turn ends, Synapse checks the session: if it **fixed something** (a draft fix exists) or **edited 3 or more files**, and the agent **stored no memory of its own**, the stop hook asks the agent to continue once with a reminder. The reminder names the work and any draft fix, and tells the agent to store a non-obvious cause and fix, gotcha or decision with `synapse_store`, or to finish if nothing is worth keeping.
+
+- **Once per session.** It never repeats, and it stays quiet when the agent is already continuing because of a stop hook (`stop_hook_active`).
+- **Agents:** Claude Code (verified live: after fixing a failing test, Claude stored the cause as a `problem-solution`), Codex and Antigravity. Re-run `synapse setup` so existing installs get the `Stop` hook.
+- **Turn it off** with `SYNAPSE_NUDGE=0`.
 
 ### Safety
 

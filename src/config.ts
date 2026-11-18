@@ -23,6 +23,11 @@ export function hookInjectMode(): 'full' | 'minimal' | 'silent' {
   return v === 'minimal' || v === 'silent' ? v : 'full';
 }
 
+/** SYNAPSE_NUDGE=0 turns off the once-per-session reminder to store what was learned (on by default). */
+export function nudgeEnabled(): boolean {
+  return !/^(0|false|no|off)$/i.test(process.env.SYNAPSE_NUDGE ?? '');
+}
+
 /**
  * SYNAPSE_HOOKS=1 tells the MCP server that lifecycle hooks are installed for its agent (setup sets it).
  * Hooks then own the brief and the session; without them, the server does that work itself.

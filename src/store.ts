@@ -170,7 +170,7 @@ export function listObservations(db: DB, opts: ListOptions = {}): Observation[] 
  *  2. duplicate merge: near-identical active record (same entity+type) is refreshed.
  *  3. otherwise insert.
  */
-export function storeObservation(db: DB, input: StoreInput): StoreResult {
+function storeObservationInner(db: DB, input: StoreInput): StoreResult {
   const s = sanitize(input);
   const ts = now();
   const body = [s.title, s.narrative, ...s.facts].join('\n');
@@ -403,4 +403,23 @@ export function listProjects(db: DB): { projectId: string; count: number; lastAc
   return (db
     .prepare('SELECT projectId, COUNT(*) AS n, MAX(COALESCE(updatedAt, createdAt)) AS last FROM observations GROUP BY projectId ORDER BY last DESC')
     .all() as { projectId: string; n: number; last: string }[]).map((r) => ({ projectId: r.projectId, count: Number(r.n), lastActivity: r.last }));
+}
+
+/**
+ * Store an observation. When the agent stores its own fix (problem-solution) in a session, the draft fixes that the
+ * hooks made in that session for the same files are resolved: the agent's account of the cause replaces them.
+ */
+export function storeObservation(db: DB, input: StoreInput): StoreResult {
+  const result = storeObservationInner(db, input);
+  if ((input.source ?? 'agent') !== 'hook' && input.type === 'problem-solution' && input.sessionId) retireDraftFixes(db, result.observation);
+  return result;
+}
+
+function retireDraftFixes(db: DB, fix: Observation): void {
+  const drafts = (db
+    .prepare("SELECT * FROM observations WHERE projectId = ? AND sessionId = ? AND source = 'hook' AND type = 'problem-solution' AND status = 'active'")
+    .all(fix.projectId, fix.sessionId!) as Record<string, unknown>[]).map(rowToObservation);
+  const files = new Set(fix.filesModified);
+  const overlapping = drafts.filter((d) => files.size === 0 || d.filesModified.some((f) => files.has(f)));
+  setStatus(db, overlapping.map((d) => d.id), 'resolved', fix.projectId);
 }

@@ -8,6 +8,7 @@ Synapse is configured entirely through environment variables. There is no config
 | `SYNAPSE_DB` | `$SYNAPSE_HOME/synapse.db` | Database file. Use `:memory:` for throwaway runs |
 | `SYNAPSE_MODE` | `lite` | `full` adds the knowledge-graph tools and `synapse_export` to the MCP server |
 | `SYNAPSE_PROJECT_ROOT` | current directory | Directory the MCP server uses to detect its project |
+| `SYNAPSE_NUDGE` | on | `0` turns off the once-per-session reminder to store what was learned ([details](agent-integration.md#store-reminder)) |
 | `SYNAPSE_HOOKS` | unset | `1` tells the MCP server that hooks are installed for its agent, so the hooks deliver the brief and run the session. Setup sets it. Unset, the server does both itself; see [agents without hooks](agent-integration.md#agents-without-hooks) |
 | `SYNAPSE_HOOK_INJECT` | `full` | `full`, `minimal` or `silent`; see [Agent integration](agent-integration.md#controlling-injection) |
 | `SYNAPSE_DEBUG` | unset | When set, hook errors are printed to stderr |

@@ -4,6 +4,7 @@
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "synapse hook", "timeout": 10 }] }],
     "PostToolUse": [{ "hooks": [{ "type": "command", "command": "synapse hook", "timeout": 10 }] }],
     "PreCompact": [{ "hooks": [{ "type": "command", "command": "synapse hook", "timeout": 10 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "synapse hook", "timeout": 10 }] }],
     "SessionEnd": [{ "hooks": [{ "type": "command", "command": "synapse hook", "timeout": 10 }] }]
   }
 }

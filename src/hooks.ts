@@ -6,20 +6,24 @@
  *   UserPromptSubmit -> record the session's first substantial prompt as its goal (candidate)
  *   PostToolUse      -> capture file edits / significant commands as candidate memories
  *   PreCompact       -> add a checkpoint row (auto-summary + agent summary) and refresh the session summary
+ *   Stop             -> once per session, after real work with nothing stored, ask the agent to store what it learned
  *   SessionEnd       -> close the session with an auto-summary
+ *
+ * A command that passes after the same command failed earlier in the session, with edits in between, becomes a
+ * draft fix (problem-solution candidate) naming the error, the files changed and the passing command.
  *
  * Auto-captured records are 'candidate' + 'ephemeral': searchable but
  * down-ranked, never surfaced as cautions, and decay twice as fast.
  * A hook must never break the host, so every failure exits 0 silently.
  */
 import path from 'node:path';
-import { hookInjectMode } from './config.js';
+import { hookInjectMode, nudgeEnabled } from './config.js';
 import { buildProjectContext } from './context.js';
-import type { DB } from './db.js';
+import { getMeta, setMeta, type DB } from './db.js';
 import { detectProject } from './project.js';
 import { addCheckpoint, checkpointText, endSession, getSession, latestCheckpoint, reopenSession, startSession } from './sessions.js';
 import { redactSecrets } from './secrets.js';
-import { listObservations, refreshSessionHashes, storeObservation } from './store.js';
+import { listObservations, refreshSessionHashes, rowToObservation, setStatus, storeObservation } from './store.js';
 import type { ObservationType, ProjectInfo } from './types.js';
 
 export interface HookInput {
@@ -35,11 +39,15 @@ export interface HookInput {
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   tool_response?: unknown;
+  /** Claude Code's Stop: true when the agent is already continuing because of a stop hook. */
+  stop_hook_active?: boolean;
 }
 
 export interface HookOutput {
   /** Context to inject into the agent (SessionStart); agents.ts formats it per agent. */
   context?: string;
+  /** Stop: ask the agent to keep going with this instruction instead of stopping. */
+  continueWith?: string;
 }
 
 const SESSION_AGENT = { claude: 'claude-code', cursor: 'cursor', codex: 'codex', devin: 'devin', copilot: 'copilot', gemini: 'gemini', antigravity: 'antigravity' } as const;
@@ -98,6 +106,17 @@ export function isTrivialCommand(cmd: string): boolean {
   const segments = cmd.split(/&&|\|\||;|\|/).map((s) => s.trim().replace(/^(sudo|time|env \S+=\S+)\s+/, '')).filter(Boolean);
   if (segments.length === 0) return true;
   return segments.every((c) => c.length < 4 || TRIVIAL_CMD.test(c) || TRIVIAL_GIT.test(c) || /^export\s/.test(c));
+}
+
+/**
+ * The command a shell line is really about, for matching a pass to an earlier failure: the first non-trivial command
+ * of a chain, without redirects or env prefixes. `npm test 2>&1 | tail -30; cat x` and `cd app && npm test` -> `npm test`.
+ */
+export function commandKey(cmd: string): string {
+  const segments = cmd.split('\n')[0].split(/&&|\|\||;|\|/).map((s) =>
+    s.trim().replace(/\s*(?:\d*>>?|&>)\s*(?:&\d+|\S+)/g, '').replace(/^(?:sudo|time|env)\s+/, '').replace(/^(?:\w+=\S*\s+)+/, '').replace(/\s+/g, ' ').trim(),
+  ).filter(Boolean);
+  return (segments.find((s) => !isTrivialCommand(s)) ?? segments[0] ?? '').slice(0, 80);
 }
 
 /** Human-readable text of a tool result: output/stdout/stderr/error fields when present, JSON otherwise. */
@@ -184,6 +203,88 @@ export function autoSummary(db: DB, project: ProjectInfo, sessionId: string): st
   return parts.join('. ') || undefined;
 }
 
+/** Session records, newest first. */
+function sessionObservations(db: DB, projectId: string, sessionId: string) {
+  return listObservations(db, { projectId, limit: 500, status: 'all' }).filter((o) => o.sessionId === sessionId);
+}
+
+/**
+ * A command passed: if the same command failed earlier in this session and files were edited since, record a draft
+ * fix and resolve the failure. Returns true when a fix was recorded.
+ */
+function recordFix(db: DB, project: ProjectInfo, sessionId: string, cmd: string): boolean {
+  // Agents rarely repeat a command verbatim (`npm test | tail -30`, then `npm test`), so match on its key.
+  const key = commandKey(cmd);
+  if (!key) return false;
+  const rows = db
+    .prepare("SELECT * FROM observations WHERE projectId = ? AND sessionId = ? AND source = 'hook' AND type = 'gotcha' AND status = 'active' AND topicKey LIKE 'hook/cmd/%' ORDER BY COALESCE(updatedAt, createdAt) DESC, id DESC")
+    .all(project.id, sessionId) as Record<string, unknown>[];
+  const failure = rows.map(rowToObservation).find((o) => commandKey(o.narrative.replace(/^\$ /, '')) === key);
+  if (!failure) return false;
+  const failedAt = failure.updatedAt ?? failure.createdAt;
+  const files = [...new Set(
+    sessionObservations(db, project.id, sessionId)
+      .filter((o) => o.type === 'what-changed' && o.source === 'hook' && (o.updatedAt ?? o.createdAt) >= failedAt)
+      .flatMap((o) => o.filesModified),
+  )];
+  if (files.length === 0) return false; // passed with no edits in between: flaky or environmental, not a fix
+  const shown = files.slice(0, 8).join(', ') + (files.length > 8 ? ', …' : '');
+  storeObservation(db, {
+    projectId: project.id,
+    entityName: entityForFile(files[0]),
+    type: 'problem-solution',
+    title: `Fixed: ${key}`,
+    narrative: `\`${key}\` failed, then passed after changes to ${shown}.\n\nFailure:\n${failure.narrative.slice(0, 900)}`,
+    facts: [`Failing command: ${failure.narrative.split('\n')[0].replace(/^\$ /, '').slice(0, 200)}`, `Passing command: ${cmd.split('\n')[0].slice(0, 200)}`, `Changed: ${shown}`],
+    filesModified: files.slice(0, 25),
+    concepts: [cmd.split(/\s+/)[0]],
+    rootPath: project.rootPath,
+    sessionId,
+    source: 'hook',
+    admissionState: 'candidate',
+    valueCategory: 'contextual',
+    topicKey: `hook/fix/${key}/${sessionId}`,
+  });
+  setStatus(db, [failure.id], 'resolved', project.id);
+  return true;
+}
+
+/** Edits this many distinct files without storing anything, and the session gets one reminder. */
+const NUDGE_MIN_FILES = 3;
+
+/**
+ * The once-per-session reminder: hooks capture what happened, but only the agent knows what it learned. Sent when
+ * the session fixed something or edited several files and stored no memory of its own.
+ */
+export function storeNudge(db: DB, project: ProjectInfo, sessionId: string): string | undefined {
+  if (!nudgeEnabled() || getMeta(db, `nudge:${sessionId}`)) return undefined;
+  const obs = sessionObservations(db, project.id, sessionId);
+  if (obs.some((o) => o.source !== 'hook')) return undefined; // the agent already stores memories
+  const files = new Set(obs.filter((o) => o.type === 'what-changed' && o.source === 'hook').flatMap((o) => o.filesModified));
+  const fixes = obs.filter((o) => o.type === 'problem-solution' && o.source === 'hook' && o.status === 'active');
+  if (fixes.length === 0 && files.size < NUDGE_MIN_FILES) return undefined;
+  setMeta(db, `nudge:${sessionId}`, new Date().toISOString());
+  const work = [
+    fixes.length ? `fixed ${fixes.slice(0, 2).map((f) => `\`${f.title.replace(/^Fixed: /, '')}\``).join(' and ')} after it failed` : '',
+    files.size ? `edited ${files.size} file${files.size === 1 ? '' : 's'}` : '',
+  ].filter(Boolean).join(' and ');
+  const drafts = fixes.length
+    ? ` Synapse drafted ${fixes.slice(0, 3).map((f) => `#${f.id} "${f.title}"`).join(', ')} from the failure and the passing run. Store the real cause and fix with synapse_store (type problem-solution, naming the files), which replaces the draft, or keep the draft as it is with synapse_qualify.`
+    : '';
+  return (
+    `Before you finish: this session ${work} but stored no Synapse memories. If you learned something a future session would need ` +
+    `(a non-obvious cause and fix, a gotcha, a decision and why), store it now with synapse_store and name the files.${drafts} ` +
+    'If nothing is worth keeping, just finish. (Synapse asks this once per session.)'
+  );
+}
+
+function closeSession(db: DB, project: ProjectInfo, sessionId: string | undefined): void {
+  if (sessionId && getSession(db, sessionId)?.status === 'active') {
+    refreshSessionHashes(db, sessionId, project.rootPath);
+    endSession(db, sessionId, autoSummary(db, project, sessionId));
+  }
+}
+
 export function handleHook(db: DB, input: HookInput): HookOutput {
   const event = input.hook_event_name ?? '';
   const project = detectProject(input.cwd || process.cwd());
@@ -243,9 +344,11 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
         const out = responseText(input.tool_response, 800);
         if (isSynapseCommand(cmd, out)) return {};
         const failed = commandFailed(input.tool_response);
+        const short = cmd.split('\n')[0].slice(0, 80);
+        // A pass after a failure of the same command, with edits in between, is a fix; it replaces the failure record.
+        if (!failed && sessionId && recordFix(db, project, sessionId, cmd)) return {};
         if (!SIGNIFICANT_CMD.test(cmd) && !failed) return {};
         const type: ObservationType = failed ? 'gotcha' : 'discovery';
-        const short = cmd.split('\n')[0].slice(0, 80);
         storeObservation(db, {
           projectId: project.id,
           entityName: 'commands',
@@ -276,11 +379,16 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
       return {};
     }
 
+    case 'Stop': {
+      const nudge = sessionId && !input.stop_hook_active ? storeNudge(db, project, sessionId) : undefined;
+      if (nudge) return { continueWith: nudge };
+      // Antigravity has no session-end event: its Stop ends the session until the next prompt reopens it.
+      if (input.agent === 'antigravity') closeSession(db, project, sessionId);
+      return {};
+    }
+
     case 'SessionEnd': {
-      if (sessionId && getSession(db, sessionId)?.status === 'active') {
-        refreshSessionHashes(db, sessionId, project.rootPath);
-        endSession(db, sessionId, autoSummary(db, project, sessionId));
-      }
+      closeSession(db, project, sessionId);
       return {};
     }
 

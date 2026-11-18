@@ -160,7 +160,7 @@ describe('setup', () => {
     setupCodex(o);
     setupCodex(o);
     const hooks = json(path.join(o.home, '.codex', 'hooks.json')).hooks;
-    expect(Object.keys(hooks)).toEqual(['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreCompact', 'SessionEnd']);
+    expect(Object.keys(hooks)).toEqual(['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreCompact', 'Stop', 'SessionEnd']);
     expect(hooks.SessionEnd[0].hooks[0]).toEqual({ type: 'command', command: '"/opt/node22/bin/node" "/opt/synapse/dist/cli.js" hook --agent codex', timeout: 3 });
     expect(hooks.PostToolUse).toHaveLength(1);
     const toml = readFileSync(path.join(o.home, '.codex', 'config.toml'), 'utf8');

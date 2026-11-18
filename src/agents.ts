@@ -15,7 +15,8 @@
  *                          `write_file`, `replace`, `run_shell_command`
  *   antigravity Antigravity — camelCase (`conversationId`, `workspacePaths`, `toolCall`), no event name and no
  *                          `cwd` (setup passes `--event`); context via `injectSteps`; no session-end or
- *                          compaction event (`Stop` ends the loop and closes the session until the next event)
+ *                          compaction event (`Stop` ends the loop and closes the session until the next event,
+ *                          after the store reminder, which `decision: "continue"` delivers)
  */
 import type { HookInput } from './hooks.js';
 
@@ -297,7 +298,7 @@ function normalizeGemini(raw: Raw): HookInput[] {
 // ── Antigravity ──────────────────────────────────────────────────────────
 
 const ANTIGRAVITY_EVENTS: Record<string, string> = {
-  SessionStart: 'SessionStart', PreInvocation: 'UserPromptSubmit', PostToolUse: 'PostToolUse', Stop: 'SessionEnd',
+  SessionStart: 'SessionStart', PreInvocation: 'UserPromptSubmit', PostToolUse: 'PostToolUse', Stop: 'Stop',
 };
 
 function normalizeAntigravity(raw: Raw): HookInput[] {
@@ -343,14 +344,21 @@ export function normalizeHookPayload(agent: AgentId, raw: Raw, env: NodeJS.Proce
 }
 
 /** Agent-specific stdout for a hook result (undefined = print nothing). */
-export function formatHookResult(agent: AgentId, rawEvent: string, result: { context?: string }): string | undefined {
+export function formatHookResult(agent: AgentId, rawEvent: string, result: { context?: string; continueWith?: string }): string | undefined {
   if (agent === 'cursor') {
     if (rawEvent === 'sessionStart' && result.context) return JSON.stringify({ additional_context: result.context });
     if (rawEvent === 'beforeSubmitPrompt') return JSON.stringify({ continue: true });
     return undefined;
   }
   if (agent === 'copilot' && rawEvent === 'sessionStart') return result.context ? JSON.stringify({ additionalContext: result.context }) : undefined;
-  if (agent === 'antigravity') return rawEvent === 'SessionStart' && result.context ? JSON.stringify({ injectSteps: [{ systemMessage: result.context }] }) : undefined;
+  if (agent === 'antigravity') {
+    if (rawEvent === 'Stop' && result.continueWith) return JSON.stringify({ decision: 'continue', reason: result.continueWith });
+    return rawEvent === 'SessionStart' && result.context ? JSON.stringify({ injectSteps: [{ systemMessage: result.context }] }) : undefined;
+  }
+  // Claude Code and Codex: a blocked Stop keeps the agent going with the reason as its next instruction.
+  if (rawEvent === 'Stop' && result.continueWith && (agent === 'claude' || agent === 'codex')) {
+    return JSON.stringify({ decision: 'block', reason: result.continueWith });
+  }
   // Claude Code, Codex, Devin CLI, Gemini CLI and Copilot's PascalCase hooks share the hookSpecificOutput contract.
   if (rawEvent === 'SessionStart' && result.context) {
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: result.context } });

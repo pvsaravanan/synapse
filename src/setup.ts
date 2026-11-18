@@ -152,7 +152,7 @@ function setupInstructions(agent: AgentId, o: SetupOptions, report: SetupReport)
 
 // ── Claude Code ──────────────────────────────────────────────────────────
 
-const CLAUDE_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreCompact', 'SessionEnd'];
+const CLAUDE_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreCompact', 'Stop', 'SessionEnd'];
 
 /** Claude/Codex/Gemini nested format: { hooks: { Event: [{ matcher?, hooks: [{ type, command, timeout }] }] } } */
 function mergeNestedHooks(settings: Record<string, any>, events: Record<string, number>, command: string, matchers: Record<string, string> = {}): void {
@@ -232,7 +232,7 @@ export function setupCursor(o: SetupOptions): SetupReport {
 // ── Codex ────────────────────────────────────────────────────────────────
 
 /** Codex hooks use Claude's nested format; SessionEnd handlers are capped at 3 seconds. */
-const CODEX_EVENTS: Record<string, number> = { SessionStart: 10, UserPromptSubmit: 10, PostToolUse: 10, PreCompact: 10, SessionEnd: 3 };
+const CODEX_EVENTS: Record<string, number> = { SessionStart: 10, UserPromptSubmit: 10, PostToolUse: 10, PreCompact: 10, Stop: 10, SessionEnd: 3 };
 
 const tomlString = (s: string) => JSON.stringify(s);
 

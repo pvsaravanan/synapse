@@ -99,10 +99,13 @@ async function main(): Promise<void> {
       if (!payload.hook_event_name && str('event')) payload.hook_event_name = str('event');
       const agent = resolveAgent(str('agent'), payload);
       let context: string | undefined;
+      let continueWith: string | undefined;
       for (const input of normalizeHookPayload(agent, payload)) {
-        context = handleHook(getDb(), input).context ?? context;
+        const r = handleHook(getDb(), input);
+        context = r.context ?? context;
+        continueWith = r.continueWith ?? continueWith;
       }
-      const out = formatHookResult(agent, String(payload.hook_event_name ?? ''), { context });
+      const out = formatHookResult(agent, String(payload.hook_event_name ?? ''), { context, continueWith });
       if (out) process.stdout.write(out);
     } catch (e) {
       if (process.env.SYNAPSE_DEBUG) process.stderr.write(`[synapse hook] ${(e as Error).stack}\n`);

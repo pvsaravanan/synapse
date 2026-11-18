@@ -18,6 +18,7 @@ Full documentation: [docs/](docs/README.md) — [getting started](docs/getting-s
   - inject a brief at session start
   - capture edits and significant or failing commands as down-ranked *candidates*
   - keep a checkpoint at every context compaction, and lead the brief with it when the session resumes
+  - detect fixes (a command that fails, then passes after edits) as draft memories, and remind the agent once per session to store what it learned
   - auto-summarize the session at end
 - **File freshness:** a memory whose files changed since it was stored is flagged `changed since: …` in search and briefs, until it's verified or resolved.
 - **Reviewed long-term memory:** facts, procedures and events approved with a recorded reason. Only approved items reach the brief, and `user`-scope items carry across projects.
