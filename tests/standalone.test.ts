@@ -133,7 +133,7 @@ describe('without hooks: edits from the working tree, rolling checkpoints', () =
     return { client, call };
   }
   const edited = () =>
-    listObservations(db, { projectId: repoProject.id, type: ['what-changed'], limit: 50, status: 'all' }).map((o) => o.filesModified[0]).sort();
+    listObservations(db, { projectId: repoProject.id, type: ['what-changed'], limit: 50, status: 'all' }).filter((o) => o.topicKey?.startsWith('hook/file/')).map((o) => o.filesModified[0]).sort();
 
   it('records files changed between tool calls, but not ones already dirty, ignored or only committed', async () => {
     writeFileSync(path.join(repo, 'src/b.ts'), 'dirty before the session\n');

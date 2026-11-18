@@ -16,7 +16,7 @@ Full documentation: [docs/](docs/README.md) — [getting started](docs/getting-s
 - **Git memory:** commits become typed, source-backed memories, with merge, version-bump and lockfile noise filtered out.
 - **Automatic hooks for Claude Code, Cursor, Codex, Devin CLI, GitHub Copilot CLI, Gemini CLI and Antigravity:**
   - inject a brief at session start
-  - capture edits and significant or failing commands as down-ranked *candidates*
+  - capture edits and significant or failing commands as down-ranked *candidates*, merged per area when the session ends; `.synapseignore` (and built-in secret-file defaults) keeps files out
   - keep a checkpoint at every context compaction, and lead the brief with it when the session resumes
   - detect fixes (a command that fails, then passes after edits) as draft memories, and remind the agent once per session to store what it learned
   - auto-summarize the session at end

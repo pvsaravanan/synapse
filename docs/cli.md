@@ -70,6 +70,7 @@ Commands that work on memory use the project of the **current directory** (see [
 | Command | Description |
 |---|---|
 | `synapse retention [--archive]` | Show retention zones; archive expired memories |
+| `synapse consolidate [--dry-run]` | Merge ended sessions' auto-captured edit records per area, and archive older duplicate command records ([consolidation](concepts.md#consolidation)). Runs automatically when a session ends |
 | `synapse export [--out FILE]` | Write this project's observations, sessions, checkpoints and long-term items as JSON (stdout by default) |
 | `synapse import <file> [--project ID]` | Import a bundle into this project or another. Topic and duplicate rules apply, so re-importing is safe |
 

@@ -96,8 +96,10 @@ describe('Copilot CLI real payloads (captured from Copilot CLI 1.0.114)', () => 
     run('copilot', { ...s, hook_event_name: 'postToolUse', toolCallId: 'c5', toolName: 'bash', toolArgs: { command: 'npm run build' }, toolResult: { resultType: 'success', textResultForLlm: 'built\n<shellId: 1 completed with exit code 0>' } });
     run('copilot', { ...s, hook_event_name: 'sessionEnd', reason: 'complete' });
     expect(obs().map((o) => o.title).sort()).toEqual([
-      'Change pay to return 2, add src/retry.ts, run npm test', 'Command failed: npm test', 'Edited src/pay.ts', 'Ran: npm run build', 'Wrote src/retry.ts',
+      'Change pay to return 2, add src/retry.ts, run npm test', 'Changed src: src/pay.ts, src/retry.ts', 'Command failed: npm test', 'Edited src/pay.ts', 'Ran: npm run build', 'Wrote src/retry.ts',
     ]);
+    // sessionEnd consolidated the two edit records into one.
+    expect(obs().filter((o) => o.title === 'Edited src/pay.ts' || o.title === 'Wrote src/retry.ts').map((o) => o.status)).toEqual(['archived', 'archived']);
     expect(session()).toMatchObject({ agent: 'copilot', status: 'completed' });
     expect(session().summary).toMatch(/Touched 2 file\(s\): (src\/pay\.ts, src\/retry\.ts|src\/retry\.ts, src\/pay\.ts)/);
   });

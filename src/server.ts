@@ -5,6 +5,7 @@ import { hooksInstalled, toolMode, VERSION, type ToolMode } from './config.js';
 import { buildProjectContext } from './context.js';
 import { getDb, openDatabase, type DB } from './db.js';
 import { formatDetail, formatIndex, formatTimeline, indexLine } from './disclosure.js';
+import { consolidateSession } from './consolidate.js';
 import { changesFor } from './freshness.js';
 import { ingestCommits } from './git.js';
 import { autoSummary, recordFileEdit, recordGoal } from './hooks.js';
@@ -191,6 +192,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     if (getSession(db, id)?.status !== 'active') return;
     refreshSessionHashes(db, id, project.rootPath);
     endSession(db, id, autoSummary(db, project, id));
+    consolidateSession(db, project, id);
   };
   const sessionId = () => (!hooks && ownSession ? ownSession : activeSession(db, project.id)?.id);
 

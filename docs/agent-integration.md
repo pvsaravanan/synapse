@@ -117,7 +117,7 @@ The PascalCase events (snake_case payloads with Claude tool names) are understoo
 
 ### Capture rules
 
-- **Edits** become a `what-changed` memory. Repeated edits to one file in one session update **one rolling record** that keeps an excerpt of the latest change. The entity comes from the path (`src/api/limit.ts` → `api`). Edits to files **outside the project** are ignored.
+- **Edits** become a `what-changed` memory. Repeated edits to one file in one session update **one rolling record** that keeps an excerpt of the latest change. The entity comes from the path (`src/api/limit.ts` → `api`). Edits to files **outside the project**, and to files matched by [`.synapseignore`](concepts.md#ignored-files) or the secret-file defaults (`.env*`, `*.pem`, …), are ignored. When the session ends, its edit records in one area are [merged into one](concepts.md#consolidation).
 - **Commands** are captured only when they matter:
   - build, test, lint, install, deploy or migration commands → `discovery`
   - commands that **failed** → `gotcha`. A failure is a non-zero exit code when the agent reports one (Codex does, and Gemini's `Exit Code: N`), `success: false` or `Exit code: N` (Devin), a non-`success` result or `completed with exit code N` (Copilot), or otherwise a failure-shaped line: `Error:`, `error[…]:`, `file:line: error:`, `file(l,c): error`, `npm ERR!`, `N failed`, a traceback, `command not found`, and so on. Output that merely contains the word "error", such as a grep of source code, doesn't count.

@@ -46,6 +46,7 @@ Usage: synapse <command> [options]
                                   Register the MCP server + hooks, and add memory instructions to CLAUDE.md / AGENTS.md / GEMINI.md
   setup git [--dry-run]           Install a git post-commit hook that records each commit as a memory (any agent)
   instructions                    Print the memory instructions setup adds (for a global CLAUDE.md / AGENTS.md)
+  consolidate [--dry-run]         Merge ended sessions' auto-captured edit records per area; archive older duplicate command records
   doctor                          Diagnose environment
   doctor agents [--agent A] [--global] [--fix]
                                   Check each agent's hooks, MCP entry, instructions and the git hook; --fix repairs them
@@ -135,6 +136,20 @@ async function main(): Promise<void> {
   const disc = await import('./disclosure.js');
 
   switch (cmd) {
+    case 'consolidate': {
+      const { consolidateProject } = await import('./consolidate.js');
+      const dryRun = Boolean(v['dry-run']);
+      const results = consolidateProject(db, project, { dryRun });
+      const merged = results.flatMap((r) => r.merged);
+      const archived = results.flatMap((r) => r.archived);
+      console.log(`synapse consolidate${dryRun ? ' (dry run)' : ''}: ${project.id}`);
+      for (const r of results) {
+        for (const m of r.merged) console.log(`  ${dryRun ? 'would merge' : 'merged'} ${m.from.length} edit record${m.from.length === 1 ? '' : 's'} in ${m.entity}${m.into ? ` into #${m.into}` : ''} (${m.files.length} files, session ${r.sessionId.slice(0, 8)})`);
+      }
+      if (archived.length) console.log(`  ${dryRun ? 'would archive' : 'archived'} ${archived.length} older duplicate command record${archived.length === 1 ? '' : 's'}`);
+      if (!merged.length && !archived.length) console.log('  nothing to consolidate');
+      break;
+    }
     case 'context': {
       const { buildProjectContext } = await import('./context.js');
       console.log(buildProjectContext(db, project, str('task') ?? pos.join(' ')).text);

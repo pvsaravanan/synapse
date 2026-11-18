@@ -163,6 +163,29 @@ Search, briefs and browsing show only `active` memories unless you ask for anoth
 
 **Candidates** come from hooks and are visible but down-ranked. They never appear as cautions in a brief. `synapse_qualify` promotes the ones worth keeping.
 
+### Consolidation
+
+Hooks keep one rolling record per edited file and per command, which piles up: a session touching ten files in one area leaves ten records, and every session's `npm test` leaves another "Ran: npm test". So when a session ends:
+
+- **Edit records merge per area.** Two or more in one area (the entity from the path, such as `api` for `src/api/limit.ts`) become one record, `Changed api: src/api/limit.ts, src/api/routes.ts +1`, listing each file with an excerpt of its change and the session's goal. A session that closes again (Antigravity, after each turn) folds new edits into the same record.
+- **Older duplicate command records are archived.** Only the newest "Ran: `<command>`" per command is kept, matched on what the command runs (`npm test | tail` counts as `npm test`).
+
+Originals are archived, not deleted, with `supersededBy` pointing at the record that replaced them. Records you qualified or that were retrieved (`synapse_detail`) are left alone, and so are a session's fixes, failures and goal. `synapse consolidate [--dry-run]` does the same for sessions that ended before consolidation existed.
+
+### Ignored files
+
+A `.synapseignore` file at the project root lists files Synapse never captures as edits (from hooks or the working-tree tracker) and never hashes for [file freshness](#file-freshness). It uses gitignore-style patterns, and the last match wins:
+
+```gitignore
+# generated code
+dist/
+/build
+src/**/*.generated.ts
+!.env.example        # re-include a file the defaults ignore
+```
+
+Secret-shaped files are ignored by default: `.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ed25519*`, `.npmrc`, `.pypirc` and `.netrc`. Memories can still name an ignored file in `filesModified`; it just isn't tracked. Commit `.synapseignore` so everyone's agents skip the same files.
+
 ## Reviewed long-term memory
 
 Observations are cheap and plentiful. **Long-term memory** is a small, curated layer on top: things worth knowing in many future sessions, each one explicitly approved with a recorded reason. Only approved items reach the brief.

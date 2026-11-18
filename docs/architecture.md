@@ -40,6 +40,8 @@
 | `src/setup.ts` | `synapse setup <agent>`: merge hooks and MCP config for Claude Code, Cursor, Codex, Devin CLI, Copilot CLI, Gemini CLI and Antigravity, and prevent duplicate hooks where Devin imports Claude's |
 | `src/server.ts` | MCP tool registration (lite and full); without hooks, the brief, the session and rolling checkpoints |
 | `src/worktree.ts` | Without hooks: detects edited files by comparing the git working tree between tool calls |
+| `src/consolidate.ts` | Merges a session's auto-captured edit records per area and archives older duplicate command records |
+| `src/ignore.ts` | `.synapseignore` patterns and the secret-file defaults |
 | `src/doctor.ts` | `synapse doctor agents` (check and repair each agent's setup) and `synapse uninstall` |
 | `src/cli.ts` | Command-line entry point |
 | `src/index.ts` | Public library exports |

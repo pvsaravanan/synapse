@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { DB } from './db.js';
+import { isIgnored } from './ignore.js';
 import { rowToObservation } from './store.js';
 import type { Observation } from './types.js';
 
@@ -50,7 +51,7 @@ export function hashFiles(root: string, files: string[]): FileHashes {
   for (const f of files) {
     if (Object.keys(out).length >= MAX_FILES) break;
     const key = fileKey(root, f);
-    if (key && !(key in out)) out[key] = hashFile(path.join(root, key));
+    if (key && !(key in out) && !isIgnored(root, key)) out[key] = hashFile(path.join(root, key));
   }
   return out;
 }

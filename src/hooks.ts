@@ -20,6 +20,8 @@ import path from 'node:path';
 import { hookInjectMode, nudgeEnabled } from './config.js';
 import { buildProjectContext } from './context.js';
 import { getMeta, setMeta, type DB } from './db.js';
+import { consolidateSession } from './consolidate.js';
+import { isIgnored } from './ignore.js';
 import { detectProject } from './project.js';
 import { addCheckpoint, checkpointText, endSession, getSession, latestCheckpoint, reopenSession, startSession } from './sessions.js';
 import { redactSecrets } from './secrets.js';
@@ -173,6 +175,7 @@ export function recordGoal(db: DB, projectId: string, sessionId: string, text: s
  * Its own memories naming the file are re-hashed, so the session's edits don't flag them.
  */
 export function recordFileEdit(db: DB, project: ProjectInfo, sessionId: string | undefined, rel: string, title: string, narrative: string): void {
+  if (isIgnored(project.rootPath, rel)) return; // .synapseignore, or a secret-shaped file
   storeObservation(db, {
     projectId: project.id,
     entityName: entityForFile(rel),
@@ -224,7 +227,7 @@ function recordFix(db: DB, project: ProjectInfo, sessionId: string, cmd: string)
   const failedAt = failure.updatedAt ?? failure.createdAt;
   const files = [...new Set(
     sessionObservations(db, project.id, sessionId)
-      .filter((o) => o.type === 'what-changed' && o.source === 'hook' && (o.updatedAt ?? o.createdAt) >= failedAt)
+      .filter((o) => o.type === 'what-changed' && o.source === 'hook' && o.topicKey?.startsWith('hook/file/') && (o.updatedAt ?? o.createdAt) >= failedAt)
       .flatMap((o) => o.filesModified),
   )];
   if (files.length === 0) return false; // passed with no edits in between: flaky or environmental, not a fix
@@ -282,6 +285,7 @@ function closeSession(db: DB, project: ProjectInfo, sessionId: string | undefine
   if (sessionId && getSession(db, sessionId)?.status === 'active') {
     refreshSessionHashes(db, sessionId, project.rootPath);
     endSession(db, sessionId, autoSummary(db, project, sessionId));
+    consolidateSession(db, project, sessionId);
   }
 }
 
