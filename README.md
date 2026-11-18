@@ -14,7 +14,7 @@ Full documentation: [docs/](docs/README.md) — [getting started](docs/getting-s
 - **Progressive disclosure:** a compact index (`synapse_search`) → timeline (`synapse_timeline`) → full detail (`synapse_detail`)
 - **Task-lensed project brief** (`synapse_project_context`): start-here files, relevant memories, cautions, the last handoff and verification steps, kept under a token budget
 - **Git memory:** commits become typed, source-backed memories, with merge, version-bump and lockfile noise filtered out.
-- **Automatic hooks for Claude Code, Cursor, Codex and Devin CLI:**
+- **Automatic hooks for Claude Code, Cursor, Codex, Devin CLI, GitHub Copilot CLI and Gemini CLI:**
   - inject a brief at session start
   - capture edits and significant or failing commands as down-ranked *candidates*
   - keep a checkpoint at every context compaction, and lead the brief with it when the session resumes
@@ -74,13 +74,15 @@ synapse setup claude      # Claude Code
 synapse setup cursor      # Cursor
 synapse setup codex       # Codex
 synapse setup devin       # Devin CLI
+synapse setup copilot     # GitHub Copilot CLI
+synapse setup gemini      # Gemini CLI
 ```
 
 Hooks handle the automatic part: the brief at session start, capturing edits and commands, checkpoints. Saving what was *learned* (decisions, gotchas, fixes) is up to the agent, and agents rarely do it unprompted, so setup also adds a short instruction block telling them when to. Skip it with `--no-instructions`; `synapse instructions` prints it.
 
 Add `--global` to configure every project, or `--dry-run` to preview the changes. Setup merges into existing config (with backups) and pins absolute Node 22 paths, so it works even when your default `node` is older.
 
-Other MCP clients (Windsurf, VS Code Copilot, Gemini CLI, …) work too: without hooks, Synapse's MCP server delivers the brief itself, runs one session per connection, detects edited files from the git working tree, and keeps a rolling checkpoint the agent can recover from after compaction. Run `synapse setup git` in a project to record every commit as a memory, from any agent.
+Other MCP clients (Windsurf, Zed, VS Code Copilot, …) work too: without hooks, Synapse's MCP server delivers the brief itself, runs one session per connection, detects edited files from the git working tree, and keeps a rolling checkpoint the agent can recover from after compaction. Run `synapse setup git` in a project to record every commit as a memory, from any agent.
 
 Then restart the agent. **Codex only:** approve the synapse hooks once in `/hooks`, then start a new thread.
 

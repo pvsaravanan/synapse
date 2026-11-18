@@ -1,6 +1,6 @@
 /**
  * `synapse setup <agent>` — register the MCP server and lifecycle hooks with
- * Claude Code, Cursor, Codex or Devin CLI. Every write merges into existing config,
+ * Claude Code, Cursor, Codex, Devin CLI, GitHub Copilot CLI or Gemini CLI. Every write merges into existing config,
  * backs the file up first, and is idempotent. Commands use absolute paths to
  * the running Node binary and CLI so they work even when the shell's default
  * `node` is too old for node:sqlite.
@@ -113,10 +113,13 @@ export function mergeInstructions(existing: string): string {
   return body ? `${body}\n\n${block}\n` : `${block}\n`;
 }
 
-/** Claude Code reads CLAUDE.md; Cursor, Codex and Devin CLI read AGENTS.md. */
+/** Claude Code reads CLAUDE.md, Gemini CLI reads GEMINI.md; Cursor, Codex, Devin CLI and Copilot CLI read AGENTS.md. */
 export function instructionsFileName(agent: AgentId): string {
-  return agent === 'claude' ? 'CLAUDE.md' : 'AGENTS.md';
+  return agent === 'claude' ? 'CLAUDE.md' : agent === 'gemini' ? 'GEMINI.md' : 'AGENTS.md';
 }
+
+/** Import line for AGENTS.md in the agents whose instruction files expand imports. */
+const AGENTS_IMPORT: Partial<Record<AgentId, string>> = { claude: '@AGENTS.md', gemini: '@./AGENTS.md' };
 
 function setupInstructions(agent: AgentId, o: SetupOptions, report: SetupReport): void {
   if (o.instructions === false) return;
@@ -131,11 +134,12 @@ function setupInstructions(agent: AgentId, o: SetupOptions, report: SetupReport)
   const current = read(file);
   const claudeMd = path.join(root, 'CLAUDE.md');
   const agentsHasBlock = read(path.join(root, 'AGENTS.md')).includes(BLOCK_START);
-  const importsAgents = (text: string) => /^@AGENTS\.md\s*$/m.test(text);
-  if (agent === 'claude' && !current.includes(BLOCK_START) && agentsHasBlock) {
-    // Devin reads both files, so keep one copy: CLAUDE.md imports AGENTS.md (Claude Code expands @imports).
-    if (importsAgents(current)) report.changes.push('instructions: already present (CLAUDE.md imports AGENTS.md)');
-    else writeFile(file, `${current.trimEnd() ? current.trimEnd() + '\n\n' : ''}@AGENTS.md\n`, o, report, 'instructions (import of AGENTS.md)');
+  const importsAgents = (text: string) => /^@(\.\/)?AGENTS\.md\s*$/m.test(text);
+  const importLine = AGENTS_IMPORT[agent];
+  if (importLine && !current.includes(BLOCK_START) && agentsHasBlock) {
+    // Keep one copy: CLAUDE.md / GEMINI.md import AGENTS.md (both agents expand @imports; Devin reads CLAUDE.md and AGENTS.md).
+    if (importsAgents(current)) report.changes.push(`instructions: already present (${name} imports AGENTS.md)`);
+    else writeFile(file, `${current.trimEnd() ? current.trimEnd() + '\n\n' : ''}${importLine}\n`, o, report, 'instructions (import of AGENTS.md)');
     return;
   }
   if (agent === 'devin' && read(claudeMd).includes(BLOCK_START)) {
@@ -150,13 +154,13 @@ function setupInstructions(agent: AgentId, o: SetupOptions, report: SetupReport)
 
 const CLAUDE_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreCompact', 'SessionEnd'];
 
-/** Claude/Codex nested format: { hooks: { Event: [{ matcher?, hooks: [{ type, command, timeout }] }] } } */
-function mergeNestedHooks(settings: Record<string, any>, events: Record<string, number>, command: string): void {
+/** Claude/Codex/Gemini nested format: { hooks: { Event: [{ matcher?, hooks: [{ type, command, timeout }] }] } } */
+function mergeNestedHooks(settings: Record<string, any>, events: Record<string, number>, command: string, matchers: Record<string, string> = {}): void {
   settings.hooks ??= {};
   for (const [event, timeout] of Object.entries(events)) {
     const groups: any[] = (settings.hooks[event] ??= []);
     const present = groups.some((g) => (g?.hooks ?? []).some((h: any) => isSynapseHookCommand(h?.command)));
-    if (!present) groups.push({ hooks: [{ type: 'command', command, timeout }] });
+    if (!present) groups.push({ ...(matchers[event] ? { matcher: matchers[event] } : {}), hooks: [{ type: 'command', command, timeout }] });
   }
 }
 
@@ -391,6 +395,65 @@ export function setupDevin(o: SetupOptions): SetupReport {
   return report;
 }
 
+// ── GitHub Copilot CLI ───────────────────────────────────────────────────
+
+/** camelCase events: Copilot's native payloads. They carry no event name, so each command passes --event. */
+const COPILOT_EVENTS = ['sessionStart', 'userPromptSubmitted', 'postToolUse', 'postToolUseFailure', 'preCompact', 'sessionEnd'];
+
+export function copilotHookEntry(o: SetupOptions, event: string): Record<string, unknown> {
+  const command = `${hookCommand(o, 'copilot')} --event ${event}`;
+  return { type: 'command', bash: command, powershell: `& ${command}`, timeoutSec: 10 };
+}
+
+export function setupCopilot(o: SetupOptions): SetupReport {
+  const report: SetupReport = { agent: 'copilot', changes: [], notes: [] };
+
+  // Hooks: user ~/.copilot/hooks/synapse.json, or the project's uncommitted .github/copilot/settings.local.json ("hooks" field).
+  const hooksFile = o.global ? path.join(o.home, '.copilot', 'hooks', 'synapse.json') : path.join(projectRoot(o), '.github', 'copilot', 'settings.local.json');
+  const config = readJson(hooksFile);
+  if (o.global) config.version ??= 1;
+  config.hooks ??= {};
+  for (const event of COPILOT_EVENTS) {
+    const list: any[] = (config.hooks[event] ??= []);
+    if (!list.some((h) => isSynapseHookCommand(h?.bash ?? h?.command))) list.push(copilotHookEntry(o, event));
+  }
+  writeFile(hooksFile, JSON.stringify(config, null, 2) + '\n', o, report, 'hooks');
+
+  // MCP: user config. Project files (.mcp.json, .github/mcp.json) are meant to be committed, and Claude Code reads .mcp.json too.
+  // Copilot passes only PATH to MCP servers, so the env lists everything the server needs.
+  const mcpFile = path.join(o.home, '.copilot', 'mcp-config.json');
+  const mcp = readJson(mcpFile);
+  mcp.mcpServers ??= {};
+  mcp.mcpServers.synapse = { type: 'local', command: o.node, args: [o.script, 'serve'], env: { ...HOOKS_ENV }, tools: ['*'] };
+  writeFile(mcpFile, JSON.stringify(mcp, null, 2) + '\n', o, report, 'mcp');
+
+  report.notes.push('Start a new Copilot CLI session in the project; /mcp should list synapse.');
+  report.notes.push('The MCP server is registered for your user and binds to the directory Copilot starts in. Set SYNAPSE_DB in its env in ~/.copilot/mcp-config.json if you use a custom database path (Copilot passes servers only PATH).');
+  if (!o.global) report.notes.push('Copilot loads project hooks only for trusted folders. Keep .github/copilot/settings.local.json out of version control (absolute paths).');
+  return report;
+}
+
+// ── Gemini CLI ───────────────────────────────────────────────────────────
+
+/** Gemini CLI timeouts are in milliseconds. */
+const GEMINI_EVENTS: Record<string, number> = { SessionStart: 10_000, BeforeAgent: 10_000, AfterTool: 10_000, PreCompress: 10_000, SessionEnd: 10_000 };
+const GEMINI_MATCHERS = { AfterTool: 'write_file|replace|edit|smart_edit|run_shell_command' };
+
+export function setupGemini(o: SetupOptions): SetupReport {
+  const report: SetupReport = { agent: 'gemini', changes: [], notes: [] };
+  const file = o.global ? path.join(o.home, '.gemini', 'settings.json') : path.join(projectRoot(o), '.gemini', 'settings.json');
+  const settings = readJson(file);
+  mergeNestedHooks(settings, GEMINI_EVENTS, hookCommand(o, 'gemini'), GEMINI_MATCHERS);
+  settings.mcpServers ??= {};
+  settings.mcpServers.synapse = { command: o.node, args: [o.script, 'serve'], env: { ...(o.global ? {} : { SYNAPSE_PROJECT_ROOT: projectRoot(o) }), ...HOOKS_ENV } };
+  writeFile(file, JSON.stringify(settings, null, 2) + '\n', o, report, 'hooks and mcp');
+
+  report.notes.push('Start a new Gemini CLI session; /mcp should list synapse and /hooks the Synapse hooks (hooks need Gemini CLI 0.26 or later).');
+  report.notes.push('Google moved consumer accounts from Gemini CLI to Antigravity CLI, which uses a different hook format; this setup is for Gemini CLI (API key and enterprise users).');
+  if (!o.global) report.notes.push('Keep .gemini/settings.json out of version control, or move the synapse entries to ~/.gemini/settings.json with --global (absolute paths).');
+  return report;
+}
+
 // ── Git post-commit hook (any agent, and people) ─────────────────────────
 
 const GIT_START = '# synapse:start';
@@ -444,7 +507,7 @@ export function setupGit(o: SetupOptions): SetupReport {
 }
 
 export function runSetup(agent: AgentId, o: SetupOptions): SetupReport {
-  const run = { cursor: setupCursor, codex: setupCodex, devin: setupDevin, claude: setupClaude }[agent];
+  const run = { cursor: setupCursor, codex: setupCodex, devin: setupDevin, claude: setupClaude, copilot: setupCopilot, gemini: setupGemini }[agent];
   const report = run(o);
   setupInstructions(agent, o, report);
   return report;

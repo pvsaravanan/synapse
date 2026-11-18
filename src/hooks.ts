@@ -24,7 +24,7 @@ import type { ObservationType, ProjectInfo } from './types.js';
 
 export interface HookInput {
   /** Which agent sent the event (set by agents.ts). */
-  agent?: 'claude' | 'cursor' | 'codex' | 'devin';
+  agent?: 'claude' | 'cursor' | 'codex' | 'devin' | 'copilot' | 'gemini';
   /** Agent-provided compaction summary (Devin's PostCompaction), used when no auto-summary exists. */
   summary?: string;
   hook_event_name?: string;
@@ -42,7 +42,7 @@ export interface HookOutput {
   context?: string;
 }
 
-const SESSION_AGENT = { claude: 'claude-code', cursor: 'cursor', codex: 'codex', devin: 'devin' } as const;
+const SESSION_AGENT = { claude: 'claude-code', cursor: 'cursor', codex: 'codex', devin: 'devin', copilot: 'copilot', gemini: 'gemini' } as const;
 
 const READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebSearch', 'TodoWrite', 'Task', 'Agent', 'ToolSearch', 'Skill', 'update_plan', 'view_image']);
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);

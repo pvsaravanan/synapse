@@ -8,13 +8,17 @@
  *   cursor  Cursor       — camelCase events, `conversation_id`, `workspace_roots`
  *   devin   Devin CLI    — Claude-style events, lowercase tools (`exec`, `edit`, …), no `cwd`
  *                          (DEVIN_PROJECT_DIR instead); also imports Claude Code's hooks
+ *   copilot GitHub Copilot CLI — camelCase events and fields, no event name in the payload (setup passes
+ *                          `--event`); tools `bash`, `edit`, `create`; `toolArgs` may be a JSON string
+ *   gemini  Gemini CLI   — snake_case fields; `BeforeAgent`, `AfterTool`, `PreCompress`; tools
+ *                          `write_file`, `replace`, `run_shell_command`
  */
 import type { HookInput } from './hooks.js';
 
-export const AGENTS = ['claude', 'cursor', 'codex', 'devin'] as const;
+export const AGENTS = ['claude', 'cursor', 'codex', 'devin', 'copilot', 'gemini'] as const;
 export type AgentId = (typeof AGENTS)[number];
 
-export const AGENT_LABEL: Record<AgentId, string> = { claude: 'claude-code', cursor: 'cursor', codex: 'codex', devin: 'devin' };
+export const AGENT_LABEL: Record<AgentId, string> = { claude: 'claude-code', cursor: 'cursor', codex: 'codex', devin: 'devin', copilot: 'copilot', gemini: 'gemini' };
 
 type Raw = Record<string, unknown>;
 
@@ -135,7 +139,7 @@ function pick(o: Raw, keys: string[]): string | undefined {
 }
 
 const PATH_KEYS = ['file_path', 'path', 'filePath', 'filepath', 'target_file', 'file', 'notebook_path'];
-const CONTENT_KEYS = ['new_string', 'new_str', 'newString', 'content', 'new_content', 'new_source', 'text', 'replacement'];
+const CONTENT_KEYS = ['new_string', 'new_str', 'newString', 'content', 'file_text', 'new_content', 'new_source', 'text', 'replacement'];
 
 function normalizeDevin(raw: Raw, env: NodeJS.ProcessEnv): HookInput[] {
   const event = str(raw.hook_event_name) ?? '';
@@ -177,10 +181,116 @@ function normalizeDevin(raw: Raw, env: NodeJS.ProcessEnv): HookInput[] {
   }
 }
 
+/** An edit or write tool's call as a Claude-style Edit/Write, or nothing when it names no file. */
+function fileEdit(base: HookInput, kind: 'Edit' | 'Write', input: Raw): HookInput[] {
+  const file = pick(input, PATH_KEYS);
+  if (!file) return [];
+  return [{ ...base, tool_name: kind, tool_input: { file_path: file, new_string: pick(input, CONTENT_KEYS) ?? '' } }];
+}
+
+// ── GitHub Copilot CLI ───────────────────────────────────────────────────
+
+/** camelCase event names (native payload) and the PascalCase ones (snake_case, Claude-compatible payload). */
+const COPILOT_EVENTS: Record<string, string> = {
+  sessionStart: 'SessionStart', SessionStart: 'SessionStart',
+  userPromptSubmitted: 'UserPromptSubmit', UserPromptSubmit: 'UserPromptSubmit',
+  postToolUse: 'PostToolUse', PostToolUse: 'PostToolUse',
+  postToolUseFailure: 'PostToolUse', PostToolUseFailure: 'PostToolUse',
+  preCompact: 'PreCompact', PreCompact: 'PreCompact',
+  sessionEnd: 'SessionEnd', SessionEnd: 'SessionEnd',
+};
+
+function objectArgs(v: unknown): Raw {
+  if (typeof v === 'string') {
+    try {
+      const parsed = JSON.parse(v);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return v && typeof v === 'object' ? (v as Raw) : {};
+}
+
+function normalizeCopilot(raw: Raw): HookInput[] {
+  const rawEvent = str(raw.hook_event_name) ?? '';
+  const event = COPILOT_EVENTS[rawEvent];
+  if (!event) return [];
+  const base: HookInput = {
+    agent: 'copilot',
+    hook_event_name: event,
+    session_id: str(raw.sessionId) ?? str(raw.session_id),
+    cwd: str(raw.cwd),
+    source: str(raw.source),
+    prompt: str(raw.prompt),
+  };
+  if (event !== 'PostToolUse') return [base];
+
+  const tool = str(raw.toolName) ?? str(raw.tool_name) ?? '';
+  const input = objectArgs(raw.toolArgs ?? raw.tool_input);
+  switch (tool) {
+    case 'bash':
+    case 'Bash': {
+      const result = objectArgs(raw.toolResult ?? raw.tool_result);
+      const resultType = str(result.resultType) ?? str(result.result_type);
+      const failed = /Failure$/.test(rawEvent) || (resultType !== undefined && resultType !== 'success');
+      const output = [str(result.textResultForLlm) ?? str(result.text_result_for_llm), str(raw.error)].filter(Boolean).join('\n');
+      return [{ ...base, tool_name: 'Bash', tool_input: { command: pick(input, ['command', 'cmd']) ?? '' }, tool_response: { output, ...(failed ? { success: false } : {}) } }];
+    }
+    case 'edit':
+    case 'str_replace':
+    case 'Edit':
+      return fileEdit(base, 'Edit', input);
+    case 'create':
+    case 'write':
+    case 'Write':
+      return fileEdit(base, 'Write', input);
+    default:
+      return [];
+  }
+}
+
+// ── Gemini CLI ───────────────────────────────────────────────────────────
+
+const GEMINI_EVENTS: Record<string, string> = {
+  SessionStart: 'SessionStart', BeforeAgent: 'UserPromptSubmit', AfterTool: 'PostToolUse', PreCompress: 'PreCompact', SessionEnd: 'SessionEnd',
+};
+
+function normalizeGemini(raw: Raw): HookInput[] {
+  const event = GEMINI_EVENTS[str(raw.hook_event_name) ?? ''];
+  if (!event) return [];
+  const base: HookInput = { agent: 'gemini', hook_event_name: event, session_id: str(raw.session_id), cwd: str(raw.cwd), source: str(raw.source), prompt: str(raw.prompt) };
+  if (event !== 'PostToolUse') return [base];
+
+  const input = objectArgs(raw.tool_input);
+  switch (str(raw.tool_name)) {
+    case 'run_shell_command': {
+      const r = objectArgs(raw.tool_response);
+      const output = strings(r.llmContent ?? r.returnDisplay ?? '').join('\n');
+      const code = output.match(/Exit Code: (-?\d+)/i);
+      const error = r.error ? strings(r.error).join('\n') || 'error' : undefined;
+      return [{
+        ...base, tool_name: 'Bash', tool_input: { command: pick(input, ['command']) ?? '' },
+        tool_response: { output: [output, error].filter(Boolean).join('\n'), ...(code ? { exit_code: Number(code[1]) } : error ? { success: false } : {}) },
+      }];
+    }
+    case 'replace':
+    case 'edit':
+    case 'smart_edit':
+      return fileEdit(base, 'Edit', input);
+    case 'write_file':
+      return fileEdit(base, 'Write', input);
+    default:
+      return [];
+  }
+}
+
 export function normalizeHookPayload(agent: AgentId, raw: Raw, env: NodeJS.ProcessEnv = process.env): HookInput[] {
   if (agent === 'cursor') return normalizeCursor(raw);
   if (agent === 'codex') return normalizeCodex(raw);
   if (agent === 'devin') return normalizeDevin(raw, env);
+  if (agent === 'copilot') return normalizeCopilot(raw);
+  if (agent === 'gemini') return normalizeGemini(raw);
   return [{ ...(raw as HookInput), agent: 'claude' }];
 }
 
@@ -191,7 +301,8 @@ export function formatHookResult(agent: AgentId, rawEvent: string, result: { con
     if (rawEvent === 'beforeSubmitPrompt') return JSON.stringify({ continue: true });
     return undefined;
   }
-  // Claude Code, Codex and Devin CLI share the hookSpecificOutput contract.
+  if (agent === 'copilot' && rawEvent === 'sessionStart') return result.context ? JSON.stringify({ additionalContext: result.context }) : undefined;
+  // Claude Code, Codex, Devin CLI, Gemini CLI and Copilot's PascalCase hooks share the hookSpecificOutput contract.
   if (rawEvent === 'SessionStart' && result.context) {
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: result.context } });
   }

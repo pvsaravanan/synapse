@@ -7,3 +7,11 @@ dist/
 # Claude Code local session data (private)
 .claude/
 .DS_Store
+
+# Agent config written by `synapse setup` (machine-specific absolute paths)
+.cursor/
+.codex/
+.devin/
+.gemini/
+.github/copilot/settings.local.json
+*.synapse-backup

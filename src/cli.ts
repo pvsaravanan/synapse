@@ -17,7 +17,7 @@ const HELP = `synapse — local-first project memory for AI coding agents
 Usage: synapse <command> [options]
 
   serve [--mode lite|full]        Start the stdio MCP server
-  hook [--agent claude|cursor|codex|devin]  Handle an agent hook event (JSON on stdin)
+  hook [--agent A] [--event E]    Handle an agent hook event (JSON on stdin); A: claude|cursor|codex|devin|copilot|gemini
   context [--task "..."]          Print the task-lensed project brief
   search <query> [--global] [--limit N] [--type T]
   store --type T --entity E --title "..." --narrative "..." [--topic K] [--facts a,b] [--files a,b]
@@ -42,8 +42,8 @@ Usage: synapse <command> [options]
   stats | projects                Counts for this project / all projects
   export [--out FILE]             Export this project's memories as JSON
   import <file> [--project ID]    Import an export bundle
-  setup <claude|cursor|codex|devin> [--global] [--dry-run] [--allow-tools (devin)] [--no-instructions]
-                                  Register the MCP server + hooks, and add memory instructions to CLAUDE.md / AGENTS.md
+  setup <claude|cursor|codex|devin|copilot|gemini> [--global] [--dry-run] [--allow-tools (devin)] [--no-instructions]
+                                  Register the MCP server + hooks, and add memory instructions to CLAUDE.md / AGENTS.md / GEMINI.md
   setup git [--dry-run]           Install a git post-commit hook that records each commit as a memory (any agent)
   instructions                    Print the memory instructions setup adds (for a global CLAUDE.md / AGENTS.md)
   doctor                          Diagnose environment
@@ -64,7 +64,7 @@ async function main(): Promise<void> {
       count: { type: 'string' }, since: { type: 'string' }, summary: { type: 'string' }, archive: { type: 'boolean' },
       out: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, scope: { type: 'string' }, text: { type: 'string' },
       applies: { type: 'string' }, evidence: { type: 'string' }, reason: { type: 'string' }, state: { type: 'string' }, query: { type: 'string' },
-      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, 'allow-tools': { type: 'boolean' }, 'no-instructions': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, event: { type: 'string' }, 'allow-tools': { type: 'boolean' }, 'no-instructions': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     },
   });
   const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : undefined);
@@ -95,6 +95,8 @@ async function main(): Promise<void> {
       const raw = await readStdin();
       if (!raw.trim()) return;
       const payload = JSON.parse(raw);
+      // Copilot's camelCase payloads carry no event name; setup passes it as --event.
+      if (!payload.hook_event_name && str('event')) payload.hook_event_name = str('event');
       const agent = resolveAgent(str('agent'), payload);
       let context: string | undefined;
       for (const input of normalizeHookPayload(agent, payload)) {
