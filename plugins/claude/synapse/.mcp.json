@@ -1,5 +1,13 @@
 {
   "mcpServers": {
-    "synapse": { "command": "synapse", "args": ["serve"] }
+    "synapse": {
+      "command": "synapse",
+      "args": [
+        "serve"
+      ],
+      "env": {
+        "SYNAPSE_HOOKS": "1"
+      }
+    }
   }
 }

@@ -6,7 +6,7 @@
  * `node` is too old for node:sqlite.
  */
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { AgentId } from './agents.js';
 import { detectProject } from './project.js';
@@ -28,12 +28,15 @@ export interface SetupOptions {
 }
 
 export interface SetupReport {
-  agent: AgentId;
+  agent: AgentId | 'git';
   changes: string[];
   notes: string[];
 }
 
 const q = (s: string) => `"${s}"`;
+
+/** Set on every MCP registration that comes with hooks, so the server leaves the brief and session to them. */
+const HOOKS_ENV = { SYNAPSE_HOOKS: '1' };
 
 export function hookCommand(o: SetupOptions, agent?: AgentId): string {
   return `${q(o.node)} ${q(o.script)} hook${agent && agent !== 'claude' ? ` --agent ${agent}` : ''}`;
@@ -164,18 +167,19 @@ export function setupClaude(o: SetupOptions): SetupReport {
   mergeNestedHooks(settings, Object.fromEntries(CLAUDE_EVENTS.map((e) => [e, 10])), hookCommand(o, 'claude'));
   writeFile(file, JSON.stringify(settings, null, 2) + '\n', o, report, 'hooks');
 
-  const mcpArgs = ['mcp', 'add', 'synapse', '-s', o.global ? 'user' : 'local', '--', o.node, o.script, 'serve'];
+  const scope = o.global ? 'user' : 'local';
+  const mcpArgs = ['mcp', 'add', 'synapse', '-s', scope, '-e', 'SYNAPSE_HOOKS=1', '--', o.node, o.script, 'serve'];
   const manual = `claude ${mcpArgs.map((a) => (a.includes(' ') ? q(a) : a)).join(' ')}`;
   if (o.dryRun || !o.useAgentCli) {
     report.changes.push(`mcp: ${o.dryRun ? 'would run' : 'run'}: ${manual}`);
   } else {
     try {
+      // Replace any previous registration so paths and env stay current.
+      try { execFileSync('claude', ['mcp', 'remove', 'synapse', '-s', scope], { stdio: 'pipe', cwd: o.cwd }); } catch { /* not registered */ }
       execFileSync('claude', mcpArgs, { stdio: 'pipe', cwd: o.cwd });
-      report.changes.push(`mcp: registered with "claude mcp add" (${o.global ? 'user' : 'local'} scope)`);
-    } catch (e) {
-      const msg = String((e as { stderr?: Buffer }).stderr ?? '');
-      if (/already exists/i.test(msg)) report.changes.push('mcp: synapse already registered');
-      else report.notes.push(`Could not run the claude CLI. Register the MCP server manually:\n  ${manual}`);
+      report.changes.push(`mcp: registered with "claude mcp add" (${scope} scope)`);
+    } catch {
+      report.notes.push(`Could not run the claude CLI. Register the MCP server manually:\n  ${manual}`);
     }
   }
   const devinDupes = [...devinHookFiles(o, 'user'), ...(o.global ? [] : devinHookFiles(o, 'project'))].filter(([f, k]) => fileHasSynapseHooks(f, k)).map(([f]) => f);
@@ -211,7 +215,7 @@ export function setupCursor(o: SetupOptions): SetupReport {
   mcp.mcpServers.synapse = {
     command: o.node,
     args: [o.script, 'serve'],
-    ...(o.global ? {} : { env: { SYNAPSE_PROJECT_ROOT: projectRoot(o) } }),
+    env: { ...(o.global ? {} : { SYNAPSE_PROJECT_ROOT: projectRoot(o) }), ...HOOKS_ENV },
   };
   writeFile(mcpFile, JSON.stringify(mcp, null, 2) + '\n', o, report, 'mcp');
 
@@ -233,7 +237,7 @@ export function codexMcpBlock(o: SetupOptions, root?: string): string {
     '[mcp_servers.synapse]',
     `command = ${tomlString(o.node)}`,
     `args = [${tomlString(o.script)}, "serve"]`,
-    ...(root ? [`env = { SYNAPSE_PROJECT_ROOT = ${tomlString(root)} }`] : []),
+    `env = { ${root ? `SYNAPSE_PROJECT_ROOT = ${tomlString(root)}, ` : ''}SYNAPSE_HOOKS = "1" }`,
   ].join('\n');
 }
 
@@ -252,6 +256,7 @@ export function setupCodex(o: SetupOptions): SetupReport {
   const existing = existsSync(configFile) ? readFileSync(configFile, 'utf8') : '';
   if (/^\s*\[mcp_servers\.synapse\]/m.test(existing)) {
     report.changes.push(`mcp: [mcp_servers.synapse] already present in ${configFile} (left unchanged)`);
+    if (!/SYNAPSE_HOOKS/.test(existing)) report.notes.push(`Add SYNAPSE_HOOKS = "1" to the env of [mcp_servers.synapse] in ${configFile}, so the server leaves the brief and session to the hooks.`);
   } else {
     const content = (existing ? existing.replace(/\s*$/, '\n\n') : '') + codexMcpBlock(o, root) + '\n';
     writeFile(configFile, content, o, report, 'mcp');
@@ -336,7 +341,7 @@ export function setupDevin(o: SetupOptions): SetupReport {
   // MCP — local scope: .devin/mcp_config.local.json (not committed); user scope: ~/.config/devin/mcp_config.json.
   // Prefer `devin mcp add` (Devin owns its schema); fall back to writing the file.
   const scopeFlag = o.global ? 'user' : 'local';
-  const envArgs = o.global ? [] : ['-e', `SYNAPSE_PROJECT_ROOT=${projectRoot(o)}`];
+  const envArgs = [...(o.global ? [] : ['-e', `SYNAPSE_PROJECT_ROOT=${projectRoot(o)}`]), '-e', 'SYNAPSE_HOOKS=1'];
   const mcpArgs = ['mcp', 'add', 'synapse', '-s', scopeFlag, ...envArgs, '--', o.node, o.script, 'serve'];
   let registered = false;
   if (!o.dryRun && o.useAgentCli) {
@@ -354,7 +359,7 @@ export function setupDevin(o: SetupOptions): SetupReport {
     const mcpFile = o.global ? path.join(o.home, '.config', 'devin', 'mcp_config.json') : path.join(projectRoot(o), '.devin', 'mcp_config.local.json');
     const mcp = readJson(mcpFile);
     mcp.mcpServers ??= {};
-    mcp.mcpServers.synapse = { command: o.node, args: [o.script, 'serve'], ...(o.global ? {} : { env: { SYNAPSE_PROJECT_ROOT: projectRoot(o) } }) };
+    mcp.mcpServers.synapse = { command: o.node, args: [o.script, 'serve'], env: { ...(o.global ? {} : { SYNAPSE_PROJECT_ROOT: projectRoot(o) }), ...HOOKS_ENV } };
     writeFile(mcpFile, JSON.stringify(mcp, null, 2) + '\n', o, report, 'mcp');
   }
 
@@ -383,6 +388,58 @@ export function setupDevin(o: SetupOptions): SetupReport {
   report.notes.push('Start a new Devin CLI session; check the synapse server is listed in its MCP servers.');
   if (importedFrom.length) report.notes.push('Hooks rely on Devin importing Claude Code config (read_config_from.claude, on by default). If you turned that off, re-run after removing the Claude hooks, or enable it.');
   if (o.global) report.notes.push('Projects that also have project-level Synapse hooks (.claude/ or .devin/) would run them twice in Devin; keep one level.');
+  return report;
+}
+
+// ── Git post-commit hook (any agent, and people) ─────────────────────────
+
+const GIT_START = '# synapse:start';
+const GIT_END = '# synapse:end';
+
+/** The lines setup puts in post-commit: ingest recent commits in the background, never failing or slowing the commit. */
+export function gitHookBlock(o: SetupOptions): string {
+  return [
+    GIT_START,
+    '# Record new commits as Synapse memories (runs in the background; errors are ignored).',
+    `(${q(o.node)} ${q(o.script)} ingest-git --count 5 >/dev/null 2>&1 &)`,
+    GIT_END,
+  ].join('\n');
+}
+
+/**
+ * Install a post-commit hook that turns each commit into a memory, whoever made it: works for agents without
+ * hooks, and for commits made outside any agent. Respects core.hooksPath; appends to an existing shell hook.
+ */
+export function setupGit(o: SetupOptions): SetupReport {
+  const report: SetupReport = { agent: 'git', changes: [], notes: [] };
+  const root = projectRoot(o);
+  let hooksDir: string;
+  try {
+    hooksDir = path.resolve(root, execFileSync('git', ['rev-parse', '--git-path', 'hooks'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
+  } catch {
+    report.notes.push(`${root} is not a git repository; nothing to install.`);
+    return report;
+  }
+  if (/[\\/]\.husky([\\/]|$)/.test(hooksDir)) {
+    report.notes.push(`Git hooks are managed by husky (${hooksDir}). Add this to .husky/post-commit instead:\n${gitHookBlock(o)}`);
+    return report;
+  }
+  const file = path.join(hooksDir, 'post-commit');
+  const current = existsSync(file) ? readFileSync(file, 'utf8') : '';
+  const shebang = current.split('\n', 1)[0];
+  if (current && shebang.startsWith('#!') && !/\b(sh|bash|zsh|dash|ksh)\b/.test(shebang)) {
+    report.notes.push(`${file} is not a shell script (${shebang}); left unchanged. Run "${o.node} ${o.script} ingest-git --count 5" from it to record commits.`);
+    return report;
+  }
+  const block = gitHookBlock(o);
+  const start = current.indexOf(GIT_START);
+  const end = current.indexOf(GIT_END);
+  const content = start !== -1 && end > start
+    ? current.slice(0, start) + block + current.slice(end + GIT_END.length)
+    : current.trim() ? `${current.trimEnd()}\n\n${block}\n` : `#!/bin/sh\n${block}\n`;
+  writeFile(file, content, o, report, 'git hook');
+  if (!o.dryRun) chmodSync(file, 0o755);
+  report.notes.push('Each commit now becomes a memory (commit messages are the content: descriptive messages make better memories). Existing history: synapse ingest-git --count 50.');
   return report;
 }
 

@@ -188,7 +188,7 @@ A session groups the work of one agent run:
 - `synapse_session_start` opens a session and returns the latest handoff summaries.
 - `synapse_session_end { summary }` closes it with a handoff: what was done, what's left, where to resume.
 
-With an agent's hooks installed, sessions follow that agent's own session or conversation ids. They close automatically with a generated summary (goal, files touched, memories stored).
+With an agent's hooks installed, sessions follow that agent's own session or conversation ids. They close automatically with a generated summary (goal, files touched, memories stored). Without hooks, the MCP server runs one session per server process, closed with the same kind of summary when the agent disconnects ([details](agent-integration.md#agents-without-hooks)).
 
 ### Compaction checkpoints
 

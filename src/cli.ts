@@ -44,6 +44,7 @@ Usage: synapse <command> [options]
   import <file> [--project ID]    Import an export bundle
   setup <claude|cursor|codex|devin> [--global] [--dry-run] [--allow-tools (devin)] [--no-instructions]
                                   Register the MCP server + hooks, and add memory instructions to CLAUDE.md / AGENTS.md
+  setup git [--dry-run]           Install a git post-commit hook that records each commit as a memory (any agent)
   instructions                    Print the memory instructions setup adds (for a global CLAUDE.md / AGENTS.md)
   doctor                          Diagnose environment
 
@@ -298,13 +299,14 @@ async function main(): Promise<void> {
 
 async function setup(agent: string | undefined, global: boolean, dryRun: boolean, allowTools = false, instructions = true): Promise<void> {
   const { AGENTS, isAgentId } = await import('./agents.js');
-  if (!isAgentId(agent)) {
-    console.error(`Usage: synapse setup <${AGENTS.join('|')}> [--global] [--dry-run]`);
+  if (!isAgentId(agent) && agent !== 'git') {
+    console.error(`Usage: synapse setup <${AGENTS.join('|')}|git> [--global] [--dry-run]`);
     process.exitCode = 1;
     return;
   }
-  const { runSetup } = await import('./setup.js');
-  const report = runSetup(agent, {
+  const { runSetup, setupGit } = await import('./setup.js');
+  const run = agent === 'git' ? (o: Parameters<typeof runSetup>[1]) => setupGit(o) : (o: Parameters<typeof runSetup>[1]) => runSetup(agent, o);
+  const report = run({
     global,
     dryRun,
     cwd: process.cwd(),

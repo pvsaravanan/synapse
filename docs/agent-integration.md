@@ -35,6 +35,7 @@ How setup behaves:
 - **Safe to re-run.** Hooks already present are not added twice, and Codex's TOML gets the table appended only if it isn't there.
 - **Pins absolute paths.** Commands use the absolute paths of the Node binary and `cli.js` that ran setup, so they keep working when your shell's default `node` is older than 22.
 - **Binds the project.** Project-scoped MCP config sets `SYNAPSE_PROJECT_ROOT`, so the server knows which project it serves even when the agent starts it from elsewhere.
+- **Marks hooks as installed.** Every MCP registration gets `SYNAPSE_HOOKS=1`, so the server leaves the brief and the session to the hooks instead of doing that work itself ([agents without hooks](#agents-without-hooks)). Re-run setup after upgrading so older registrations get it. Codex's existing `[mcp_servers.synapse]` table isn't rewritten; setup tells you the line to add.
 - **Keep project files private.** The project-level files contain machine-specific absolute paths, so keep `.claude/`, `.cursor/`, `.codex/` and `.devin/` out of version control.
 
 ### Agent instructions
@@ -143,7 +144,7 @@ The plugin bundles the MCP server, the hooks and a `synapse-memory` skill. It ca
 
 ## Other MCP clients
 
-Agents without hook support (Windsurf, VS Code Copilot, Gemini CLI, Claude Desktop, …) can still use the tools:
+Any MCP client (Windsurf, VS Code Copilot, Gemini CLI, Claude Desktop, …) can use Synapse:
 
 ```json
 {
@@ -157,7 +158,34 @@ Agents without hook support (Windsurf, VS Code Copilot, Gemini CLI, Claude Deskt
 }
 ```
 
-Without hooks nothing happens automatically, so tell the agent to use memory in its instructions file (`AGENTS.md`, rules, …). `synapse instructions` prints the block setup uses; paste it in.
+Leave `SYNAPSE_HOOKS` unset: the server then stands in for the hooks (below). Also paste the output of `synapse instructions` into the agent's instructions file (`AGENTS.md`, rules, …), and run `synapse setup git` in the project.
+
+### Agents without hooks
+
+Without `SYNAPSE_HOOKS=1`, the MCP server does part of the hooks' job itself:
+
+| Hooks do | Without hooks |
+|---|---|
+| Brief at session start | The brief goes into the server's **MCP instructions**, which clients that support them show to the model when the session starts. Clients not known to do that get the brief at the top of the **first Synapse tool result** instead (skipped when that first call is `synapse_project_context`). Claude Code is known to show instructions (verified live). |
+| One session per agent session | **One session per server process.** It opens on the first tool call, labelled with the client's name, and closes with an automatic summary when the agent exits or closes the connection. `synapse_session_end` closes it early; the next call opens a new one. |
+| Session goal from your first prompt | The task of the first `synapse_project_context` call |
+| Capture of edits and commands | Not available. `synapse setup git` records each commit instead. |
+| Compaction checkpoints | Not available |
+
+Limits: a client that keeps one server running across several chats gets one long session for all of them, and a session's summary only lists what was stored through the tools (there's no edit capture).
+
+### Git hook: commits from any agent
+
+```bash
+synapse setup git [--dry-run]
+```
+
+Installs a `post-commit` hook that runs `synapse ingest-git` in the background after each commit, so every commit becomes a typed memory, whichever agent or person made it. It never fails or slows a commit.
+
+- Honors `core.hooksPath`, and appends to an existing shell hook between `# synapse:start` and `# synapse:end` markers (re-running refreshes them).
+- Leaves non-shell hooks alone and, for husky, prints the line to add to `.husky/post-commit`.
+- Merge, version-bump and lockfile commits are filtered out as noise, as with `synapse ingest-git`. Descriptive commit messages make better memories.
+- Useful with hooked agents too: it covers commits made outside any agent.
 
 **Cloud agents** (Devin's cloud sessions, Codex cloud, …) run on remote machines and can't reach a Synapse server on your computer. Install Synapse on their machine instead; its memory then stays there. The local **Devin CLI** is fully supported through `synapse setup devin`.
 

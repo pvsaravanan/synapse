@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -142,14 +142,14 @@ describe('setup', () => {
     expect(hooks.hooks.afterFileEdit.map((h: { command: string }) => h.command)).toEqual(['./format.sh', '"/opt/node22/bin/node" "/opt/synapse/dist/cli.js" hook --agent cursor']);
     const mcp = json(path.join(dir, '.cursor', 'mcp.json'));
     expect(Object.keys(mcp.mcpServers)).toEqual(['other', 'synapse']);
-    expect(mcp.mcpServers.synapse).toEqual({ command: '/opt/node22/bin/node', args: ['/opt/synapse/dist/cli.js', 'serve'], env: { SYNAPSE_PROJECT_ROOT: detectProject(dir).rootPath } });
+    expect(mcp.mcpServers.synapse).toEqual({ command: '/opt/node22/bin/node', args: ['/opt/synapse/dist/cli.js', 'serve'], env: { SYNAPSE_PROJECT_ROOT: detectProject(dir).rootPath, SYNAPSE_HOOKS: '1' } });
     expect(existsSync(path.join(dir, '.cursor', 'hooks.json.synapse-backup'))).toBe(true);
   });
 
   it('cursor --global writes to ~/.cursor without a project root', () => {
     const o = opts({ global: true });
     setupCursor(o);
-    expect(json(path.join(o.home, '.cursor', 'mcp.json')).mcpServers.synapse.env).toBeUndefined();
+    expect(json(path.join(o.home, '.cursor', 'mcp.json')).mcpServers.synapse.env).toEqual({ SYNAPSE_HOOKS: '1' });
     expect(existsSync(path.join(o.home, '.cursor', 'hooks.json'))).toBe(true);
   });
 
@@ -166,7 +166,8 @@ describe('setup', () => {
     const toml = readFileSync(path.join(o.home, '.codex', 'config.toml'), 'utf8');
     expect(toml.startsWith('model = "gpt-5"\n\n[mcp_servers.docs]\ncommand = "docs-mcp"\n\n[mcp_servers.synapse]')).toBe(true);
     expect(toml.match(/\[mcp_servers\.synapse\]/g)).toHaveLength(1);
-    expect(codexMcpBlock(o, '/p')).toContain('env = { SYNAPSE_PROJECT_ROOT = "/p" }');
+    expect(codexMcpBlock(o, '/p')).toContain('env = { SYNAPSE_PROJECT_ROOT = "/p", SYNAPSE_HOOKS = "1" }');
+    expect(codexMcpBlock(o)).toContain('env = { SYNAPSE_HOOKS = "1" }');
   });
 
   it('claude: unchanged command keeps existing installs idempotent', () => {
@@ -331,7 +332,7 @@ describe('setup devin', () => {
     expect(hooks.PostToolUse).toHaveLength(1);
     expect(hooks.PostToolUse[0].hooks[0].command).toBe('"/opt/node22/bin/node" "/opt/synapse/dist/cli.js" hook --agent devin');
     expect(json(path.join(root(), '.devin', 'mcp_config.local.json')).mcpServers.synapse).toEqual({
-      command: '/opt/node22/bin/node', args: ['/opt/synapse/dist/cli.js', 'serve'], env: { SYNAPSE_PROJECT_ROOT: root() },
+      command: '/opt/node22/bin/node', args: ['/opt/synapse/dist/cli.js', 'serve'], env: { SYNAPSE_PROJECT_ROOT: root(), SYNAPSE_HOOKS: '1' },
     });
   });
 
@@ -360,7 +361,7 @@ describe('setup devin', () => {
     const cfg = json(path.join(o.home, '.config', 'devin', 'config.json'));
     expect(cfg.model).toBe('x');
     expect(Object.keys(cfg.hooks)).toEqual(['Stop', 'SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostCompaction', 'SessionEnd']);
-    expect(json(path.join(o.home, '.config', 'devin', 'mcp_config.json')).mcpServers.synapse.env).toBeUndefined();
+    expect(json(path.join(o.home, '.config', 'devin', 'mcp_config.json')).mcpServers.synapse.env).toEqual({ SYNAPSE_HOOKS: '1' });
   });
 
   it('setup claude warns when Devin has its own Synapse hooks (double firing)', async () => {
@@ -502,5 +503,55 @@ describe('setup: agent instructions (CLAUDE.md / AGENTS.md)', () => {
     expect(dry.changes.join('\n')).toContain('would write');
     expect(read('CLAUDE.md')).toBe('');
     expect(read('AGENTS.md')).toBe('');
+  });
+});
+
+describe('setup git (post-commit hook)', () => {
+  const repo = () => {
+    const d = mkdtempSync(path.join(os.tmpdir(), 'syn-git-'));
+    execFileSync('git', ['init', '-q'], { cwd: d });
+    return d;
+  };
+  const opts = (cwd: string): SetupOptions => ({ global: false, dryRun: false, cwd, home: os.tmpdir(), node: '/n', script: '/s/cli.js', useAgentCli: false });
+  const hookFile = (d: string) => path.join(d, '.git', 'hooks', 'post-commit');
+
+  it('installs an executable hook once, appending to an existing shell hook', async () => {
+    const { setupGit } = await import('../src/setup.js');
+    const d = repo();
+    mkdirSync(path.dirname(hookFile(d)), { recursive: true });
+    writeFileSync(hookFile(d), '#!/bin/bash\necho committed\n');
+    setupGit(opts(d));
+    setupGit(opts(d));
+    const text = readFileSync(hookFile(d), 'utf8');
+    expect(text.startsWith('#!/bin/bash\necho committed\n\n# synapse:start')).toBe(true);
+    expect(text.match(/# synapse:start/g)).toHaveLength(1);
+    expect(text).toContain('("/n" "/s/cli.js" ingest-git --count 5 >/dev/null 2>&1 &)');
+    expect(statSync(hookFile(d)).mode & 0o111).toBeTruthy();
+  });
+
+  it('creates a shell hook when none exists, and honors core.hooksPath', async () => {
+    const { setupGit } = await import('../src/setup.js');
+    const d = repo();
+    setupGit(opts(d));
+    expect(readFileSync(hookFile(d), 'utf8').startsWith('#!/bin/sh\n# synapse:start')).toBe(true);
+    const e = repo();
+    execFileSync('git', ['config', 'core.hooksPath', 'tools/hooks'], { cwd: e });
+    setupGit(opts(e));
+    expect(existsSync(path.join(e, 'tools', 'hooks', 'post-commit'))).toBe(true);
+  });
+
+  it('leaves non-shell hooks, husky and non-repositories alone', async () => {
+    const { setupGit } = await import('../src/setup.js');
+    const d = repo();
+    mkdirSync(path.dirname(hookFile(d)), { recursive: true });
+    writeFileSync(hookFile(d), '#!/usr/bin/env node\nconsole.log(1)\n');
+    expect(setupGit(opts(d)).notes.join('\n')).toContain('not a shell script');
+    expect(readFileSync(hookFile(d), 'utf8')).toBe('#!/usr/bin/env node\nconsole.log(1)\n');
+    const h = repo();
+    execFileSync('git', ['config', 'core.hooksPath', '.husky/_'], { cwd: h });
+    expect(setupGit(opts(h)).notes.join('\n')).toContain('.husky/post-commit');
+    expect(existsSync(path.join(h, '.husky', '_', 'post-commit'))).toBe(false);
+    const plain = mkdtempSync(path.join(os.tmpdir(), 'syn-nogit-'));
+    expect(setupGit(opts(plain)).notes.join('\n')).toContain('not a git repository');
   });
 });

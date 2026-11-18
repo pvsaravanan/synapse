@@ -54,7 +54,7 @@ export function recentSessions(db: DB, projectId: string, limit = 3, onlyWithSum
   return (db
     .prepare(
       `SELECT * FROM sessions WHERE projectId = ? ${onlyWithSummary ? "AND summary IS NOT NULL AND summary != ''" : ''}
-       ORDER BY COALESCE(endedAt, startedAt) DESC LIMIT ?`,
+       ORDER BY COALESCE(endedAt, startedAt) DESC, rowid DESC LIMIT ?`,
     )
     .all(projectId, limit) as Record<string, unknown>[]).map(toSession);
 }

@@ -1,12 +1,13 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { toolMode, VERSION, type ToolMode } from './config.js';
+import { hooksInstalled, toolMode, VERSION, type ToolMode } from './config.js';
 import { buildProjectContext } from './context.js';
 import { getDb, openDatabase, type DB } from './db.js';
 import { formatDetail, formatIndex, formatTimeline, indexLine } from './disclosure.js';
 import { changesFor } from './freshness.js';
 import { ingestCommits } from './git.js';
+import { autoSummary, recordGoal } from './hooks.js';
 import * as graph from './graph.js';
 import {
   getLongTerm,
@@ -23,7 +24,7 @@ import {
 import { archiveExpired, exportProject, retentionReport } from './maintenance.js';
 import { detectProject } from './project.js';
 import { search } from './search.js';
-import { activeSession, endSession, recentSessions, startSession } from './sessions.js';
+import { activeSession, endSession, getSession, recentSessions, startSession } from './sessions.js';
 import {
   getObservations,
   promoteObservation,
@@ -62,20 +63,75 @@ export function toolNames(mode: ToolMode = 'full'): string[] {
   return [...(toolNameRegistry.get(server) ?? [])];
 }
 
-export function createServer(opts: { db?: DB; project?: ProjectInfo; mode?: ToolMode } = {}): McpServer {
+/** Clients known to show MCP server instructions to the model; they get the brief there, not on the first call. */
+const CLIENTS_SHOWING_INSTRUCTIONS = new Set(['claude-code']);
+
+const USAGE_HINT = [
+  'Synapse is this project\'s memory, shared across sessions and agents. Current code and the user\'s request win over memory.',
+  '- Before non-trivial work, call synapse_project_context with the task. Search before re-investigating a past bug or decision.',
+  '- Store non-obvious fixes, gotchas and decisions with synapse_store as you go (name the files). End with synapse_session_end.',
+].join('\n');
+
+export interface ServerOptions {
+  db?: DB;
+  project?: ProjectInfo;
+  mode?: ToolMode;
+  /** Lifecycle hooks are installed for this agent (default: SYNAPSE_HOOKS). Without them, the server delivers the brief and runs the session. */
+  hooks?: boolean;
+}
+
+export function createServer(opts: ServerOptions = {}): McpServer {
   const db = opts.db ?? getDb();
   let project: ProjectInfo = opts.project ?? detectProject(process.env.SYNAPSE_PROJECT_ROOT || process.cwd());
   const mode = opts.mode ?? toolMode();
-  const sessionId = () => activeSession(db, project.id)?.id;
+  const hooks = opts.hooks ?? hooksInstalled();
 
-  const server = new McpServer({ name: 'synapse', version: VERSION });
+  // Without hooks, the server stands in for them: the brief goes into its instructions (shown at session start by
+  // clients that support them) or onto the first tool result, and one session spans the server process.
+  const brief = hooks ? '' : buildProjectContext(db, project, '', { maxTokens: 700 }).text;
+  const server = new McpServer({ name: 'synapse', version: VERSION }, { instructions: brief ? `${USAGE_HINT}\n\n${brief}` : USAGE_HINT });
+  let ownSession: string | undefined;
+  let briefed = hooks;
+  const clientName = () => server.server.getClientVersion()?.name ?? '';
+  const ensureOwnSession = () => {
+    if (hooks || (ownSession && getSession(db, ownSession)?.status === 'active')) return;
+    ownSession = startSession(db, project.id, { agent: clientName() || 'mcp' }).id;
+  };
+  const endOwnSession = () => {
+    const id = ownSession;
+    ownSession = undefined;
+    if (!id || getSession(db, id)?.status !== 'active') return;
+    refreshSessionHashes(db, id, project.rootPath);
+    endSession(db, id, autoSummary(db, project, id));
+  };
+  const sessionId = () => (!hooks && ownSession ? ownSession : activeSession(db, project.id)?.id);
+
   const names: string[] = [];
   const register = server.registerTool.bind(server) as (...args: unknown[]) => unknown;
   server.registerTool = ((...args: unknown[]) => {
-    names.push(args[0] as string);
+    const name = args[0] as string;
+    names.push(name);
+    const handler = args[args.length - 1] as (...a: unknown[]) => Promise<Text>;
+    args[args.length - 1] = async (...a: unknown[]) => {
+      if (name !== 'synapse_session_start') ensureOwnSession();
+      const result = await handler(...a);
+      if (briefed) return result;
+      briefed = true;
+      if (name === 'synapse_project_context' || CLIENTS_SHOWING_INSTRUCTIONS.has(clientName()) || result.isError) return result;
+      return { ...result, content: [{ type: 'text', text: `Synapse brief (first call this session; current code wins):\n\n${brief}\n\n---` }, ...result.content] };
+    };
     return register(...args);
   }) as typeof server.registerTool;
   toolNameRegistry.set(server, names);
+  const previousOnClose = server.server.onclose;
+  server.server.onclose = () => {
+    try {
+      endOwnSession();
+    } catch {
+      /* the database may already be closed */
+    }
+    previousOnClose?.();
+  };
 
   server.registerTool(
     'synapse_store',
@@ -235,7 +291,10 @@ export function createServer(opts: { db?: DB; project?: ProjectInfo; mode?: Tool
         '(bugfix/feature/refactor/release/docs/test/onboarding) with start-here files, relevant memories, cautions and the last handoff.',
       inputSchema: { task: z.string(), maxTokens: z.number().int().min(200).max(4000).optional() },
     },
-    async ({ task, maxTokens }) => text(buildProjectContext(db, project, task, { maxTokens }).text),
+    async ({ task, maxTokens }) => {
+      if (!hooks && ownSession) recordGoal(db, project.id, ownSession, task);
+      return text(buildProjectContext(db, project, task, { maxTokens }).text);
+    },
   );
 
   server.registerTool(
@@ -246,8 +305,10 @@ export function createServer(opts: { db?: DB; project?: ProjectInfo; mode?: Tool
       inputSchema: { agent: z.string().optional(), projectRoot: z.string().optional() },
     },
     async ({ agent, projectRoot }) => {
+      if (!hooks) endOwnSession();
       if (projectRoot) project = detectProject(projectRoot);
-      const s = startSession(db, project.id, { agent });
+      const s = startSession(db, project.id, { agent: agent ?? (clientName() || undefined) });
+      if (!hooks) ownSession = s.id;
       const prev = recentSessions(db, project.id, 3).filter((p) => p.id !== s.id);
       return text(
         [`Session ${s.id} started for ${project.id}.`, prev.length ? '\nPrevious sessions:' : '\nNo previous session summaries.',
@@ -264,9 +325,11 @@ export function createServer(opts: { db?: DB; project?: ProjectInfo; mode?: Tool
       inputSchema: { summary: z.string() },
     },
     async ({ summary }) => {
-      const s = activeSession(db, project.id) ?? startSession(db, project.id);
+      const own = !hooks && ownSession ? getSession(db, ownSession) : undefined;
+      const s = own ?? activeSession(db, project.id) ?? startSession(db, project.id);
       refreshSessionHashes(db, s.id, project.rootPath);
       endSession(db, s.id, summary);
+      if (s.id === ownSession) ownSession = undefined;
       return text(`Session ${s.id} closed with handoff summary.`);
     },
   );
@@ -476,4 +539,14 @@ function registerFullTools(server: McpServer, db: DB, proj: () => ProjectInfo): 
 export async function serveStdio(mode?: ToolMode): Promise<void> {
   const server = createServer({ mode });
   await server.connect(new StdioServerTransport());
+  // The agent closing stdin (or stopping the process) ends the session the server ran, with an automatic summary.
+  let closing = false;
+  const shutdown = () => {
+    if (closing) return;
+    closing = true;
+    void server.close().finally(() => process.exit(0));
+  };
+  process.stdin.on('end', shutdown);
+  process.stdin.on('close', shutdown);
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(signal, shutdown);
 }

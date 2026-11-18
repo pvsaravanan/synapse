@@ -128,7 +128,28 @@ function entityForFile(rel: string): string {
   return parts[0] === 'src' && parts.length > 2 ? parts[1] : parts[0];
 }
 
-function autoSummary(db: DB, project: ProjectInfo, sessionId: string): string | undefined {
+/** Record a session's goal (its first substantial request) once. Returns false when it already has one or it's too short. */
+export function recordGoal(db: DB, projectId: string, sessionId: string, text: string): boolean {
+  const prompt = text.trim();
+  if (prompt.length < 20 || prompt.startsWith('/')) return false;
+  const hasGoal = listObservations(db, { projectId, type: ['session-request'], limit: 20, status: 'all' }).some((o) => o.sessionId === sessionId);
+  if (hasGoal) return false;
+  storeObservation(db, {
+    projectId,
+    entityName: 'session',
+    type: 'session-request',
+    title: prompt.split('\n')[0].slice(0, 100),
+    narrative: prompt.slice(0, 1500),
+    sessionId,
+    source: 'hook',
+    admissionState: 'candidate',
+    valueCategory: 'ephemeral',
+    topicKey: `hook/goal/${sessionId}`,
+  });
+  return true;
+}
+
+export function autoSummary(db: DB, project: ProjectInfo, sessionId: string): string | undefined {
   const obs = listObservations(db, { projectId: project.id, limit: 500, status: 'all' }).filter((o) => o.sessionId === sessionId);
   if (obs.length === 0) return undefined;
   const goal = obs.find((o) => o.type === 'session-request');
@@ -175,22 +196,7 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
     }
 
     case 'UserPromptSubmit': {
-      const prompt = (input.prompt ?? '').trim();
-      if (!sessionId || prompt.length < 20 || prompt.startsWith('/')) return {};
-      const hasGoal = listObservations(db, { projectId: project.id, type: ['session-request'], limit: 20, status: 'all' }).some((o) => o.sessionId === sessionId);
-      if (hasGoal) return {};
-      storeObservation(db, {
-        projectId: project.id,
-        entityName: 'session',
-        type: 'session-request',
-        title: prompt.split('\n')[0].slice(0, 100),
-        narrative: prompt.slice(0, 1500),
-        sessionId,
-        source: 'hook',
-        admissionState: 'candidate',
-        valueCategory: 'ephemeral',
-        topicKey: `hook/goal/${sessionId}`,
-      });
+      if (sessionId) recordGoal(db, project.id, sessionId, input.prompt ?? '');
       return {};
     }
 

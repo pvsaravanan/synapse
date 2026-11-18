@@ -13,6 +13,7 @@ Commands that work on memory use the project of the **current directory** (see [
 | `synapse serve [--mode lite\|full]` | Start the stdio MCP server |
 | `synapse hook [--agent claude\|cursor\|codex\|devin]` | Handle one agent hook event read as JSON from stdin, and reply in that agent's format. Always exits 0 |
 | `synapse setup <claude\|cursor\|codex\|devin> [--global] [--dry-run] [--allow-tools] [--no-instructions]` | Install hooks, register the MCP server, and add memory instructions to the project's `CLAUDE.md` / `AGENTS.md` ([details](agent-integration.md)). `--no-instructions` skips the instructions. `--allow-tools` (Devin only) pre-approves Synapse's own tools, except `synapse_lt_approve`, in your user-level Devin permissions |
+| `synapse setup git [--dry-run]` | Install a git `post-commit` hook that records each commit as a memory, from any agent or person ([details](agent-integration.md#git-hook-commits-from-any-agent)) |
 | `synapse instructions` | Print the memory-instructions block setup adds to `CLAUDE.md` / `AGENTS.md`, to paste into a global file or another agent's rules |
 | `synapse doctor` | Check Node, SQLite/FTS5, database path, project detection and git |
 | `synapse version` | Print the version |

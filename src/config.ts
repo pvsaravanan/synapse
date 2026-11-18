@@ -23,4 +23,12 @@ export function hookInjectMode(): 'full' | 'minimal' | 'silent' {
   return v === 'minimal' || v === 'silent' ? v : 'full';
 }
 
+/**
+ * SYNAPSE_HOOKS=1 tells the MCP server that lifecycle hooks are installed for its agent (setup sets it).
+ * Hooks then own the brief and the session; without them, the server does that work itself.
+ */
+export function hooksInstalled(): boolean {
+  return /^(1|true|yes|on)$/i.test(process.env.SYNAPSE_HOOKS ?? '');
+}
+
 export const VERSION = '0.1.0';
