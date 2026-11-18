@@ -134,6 +134,8 @@ aside .empty { color: var(--muted); margin-top: 40px; text-align: center; }
     for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
     return el;
   };
+  // replaceChildren turns null into the text "null"; drop empty entries first.
+  const fill = (el, ...kids) => el.replaceChildren(...kids.flat().filter((k) => k != null && k !== false));
   const toast = (msg) => { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 1800); };
   const when = (iso) => {
     if (!iso) return '';
@@ -167,7 +169,7 @@ aside .empty { color: var(--muted); margin-top: 40px; text-align: center; }
 
   async function loadStats() {
     const s = await api('/api/stats', { project: S.project });
-    const chips = [['memories', s.total], ['active', s.byStatus.active || 0], ['candidates', s.candidates]];
+    const chips = [[s.total === 1 ? 'memory' : 'memories', s.total], ['active', s.byStatus.active || 0], [s.candidates === 1 ? 'candidate' : 'candidates', s.candidates]];
     if (s.stale != null) chips.push(['changed since', s.stale]);
     $('stats').replaceChildren(...chips.map(([k, v]) => h('span', { class: 'stat' }, h('b', {}, v), ' ' + k)));
     renderNav(s);
@@ -225,7 +227,7 @@ aside .empty { color: var(--muted); margin-top: 40px; text-align: center; }
   async function showSession(s) {
     const { items } = await api('/api/session', { id: s.id });
     S.selected = null;
-    $('detail').replaceChildren(h('span', { class: 'small' }, 'Session ' + s.id.slice(0, 8)), h('h2', {}, s.agent || 'session'),
+    fill($('detail'), h('span', { class: 'small' }, 'Session ' + s.id.slice(0, 8)), h('h2', {}, s.agent || 'session'),
       s.summary ? h('div', { class: 'narrative' }, s.summary) : null,
       h('div', { class: 'section' }, h('h3', {}, items.length + ' records'),
         items.length ? h('div', { class: 'list' }, ...items.map(memoryRow)) : h('p', { class: 'small' }, 'None.')));
@@ -287,7 +289,7 @@ aside .empty { color: var(--muted); margin-top: 40px; text-align: center; }
       m.commitHash ? ['Commit', m.commitHash.slice(0, 10)] : null, m.access ? ['Read', m.access.accessCount + ' time' + (m.access.accessCount === 1 ? '' : 's')] : null,
     ].filter(Boolean);
     const list = (title, items) => items && items.length ? h('div', { class: 'section' }, h('h3', {}, title), h('ul', {}, ...items.map((x) => h('li', {}, x)))) : null;
-    d.replaceChildren(
+    fill(d,
       h('span', { class: 'type ' + m.type }, m.type), h('h2', {}, m.title),
       m.changes.length ? h('p', {}, h('span', { class: 'flag warn' }, 'Changed since stored: ' + m.changes.map((c) => c.file + ' (' + c.change + ')').join(', ')), ' ', h('span', { class: 'small' }, 'Check the current code, then mark it.')) : null,
       h('div', { class: 'narrative' }, m.narrative || '(no narrative)'),
