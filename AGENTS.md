@@ -18,7 +18,7 @@ Rebuild after changing `src/` when testing hooks or the MCP server live, because
 
 - `src/server.ts`: MCP tools (lite and full modes); without hooks it also runs the session, using `src/worktree.ts` to detect edits
 - `src/hooks.ts`, `src/agents.ts`: hook handling; each agent's payloads are normalized to one event model
-- `src/setup.ts`: `synapse setup <agent>` (hooks, MCP registration, CLAUDE.md / AGENTS.md instructions)
+- `src/setup.ts`: `synapse setup <agent>` (hooks, MCP registration, CLAUDE.md / AGENTS.md instructions); `src/doctor.ts` checks, repairs and uninstalls it
 - `src/store.ts`, `src/db.ts`: observations, upserts and duplicate merging, schema and migrations
 - `src/context.ts`: the task-lensed project brief
 - `src/search.ts`, `src/retention.ts`: FTS ranking and relevance decay

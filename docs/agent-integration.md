@@ -37,7 +37,7 @@ All agents share one memory store (`~/.synapse/synapse.db`), so a decision store
 How setup behaves:
 
 - **Merges, never replaces.** Your other hooks and MCP servers are kept. A file is backed up as `*.synapse-backup` before it changes. Invalid JSON is reported and left untouched.
-- **Safe to re-run.** Hooks already present are not added twice, and Codex's TOML gets the table appended only if it isn't there.
+- **Safe to re-run.** Hooks already present are not added twice: their commands are refreshed in place, so a moved install or a new Node path takes effect, and events added by newer versions are filled in. Codex's TOML gets the table appended only if it isn't there.
 - **Pins absolute paths.** Commands use the absolute paths of the Node binary and `cli.js` that ran setup, so they keep working when your shell's default `node` is older than 22.
 - **Binds the project.** Project-scoped MCP config sets `SYNAPSE_PROJECT_ROOT`, so the server knows which project it serves even when the agent starts it from elsewhere.
 - **Marks hooks as installed.** Every MCP registration gets `SYNAPSE_HOOKS=1`, so the server leaves the brief and the session to the hooks instead of doing that work itself ([agents without hooks](#agents-without-hooks)). Re-run setup after upgrading so older registrations get it. Codex's existing `[mcp_servers.synapse]` table isn't rewritten; setup tells you the line to add.
@@ -228,10 +228,43 @@ Installs a `post-commit` hook that runs `synapse ingest-git` in the background a
 
 **Cloud agents** (Devin's cloud sessions, Codex cloud, …) run on remote machines and can't reach a Synapse server on your computer. Install Synapse on their machine instead; its memory then stays there. The local **Devin CLI** is fully supported through `synapse setup devin`.
 
+## Checking and repairing setup
+
+```bash
+synapse doctor agents [--agent A] [--global] [--fix]
+```
+
+For every agent with anything of Synapse's in the scope (the project, or your user config with `--global`), it checks:
+
+- **Hooks:** every event setup installs is present (newer versions add events, such as `Stop`), and the Node binary and `cli.js` the commands run still exist. A command from another Synapse install is a warning.
+- **MCP entry:** registered, its paths exist, and `SYNAPSE_HOOKS=1` is set exactly when hooks are installed. Without it next to hooks, the server also delivers the brief and runs a second session; with it and no hooks, nothing delivers the brief. Claude Code's entry is read with `claude mcp get synapse`, since Claude Code keeps it in its own files.
+- **Instructions:** the project's `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` has the current Synapse block (or imports one).
+- **Git hook** (project scope): the `post-commit` block points at valid paths.
+
+Agents with nothing installed are listed as "not set up". Devin isn't counted as set up just because it imports Claude Code's hooks: it needs its own MCP entry or hooks. Copilot CLI's MCP entry is user-level, so in a project without Copilot hooks (and no `--global` hooks) its `SYNAPSE_HOOKS=1` is flagged: Copilot would get no brief there.
+
+The command exits 1 when it finds a problem. `--fix` re-runs setup for each agent with a problem, which refreshes stale paths, adds missing events and re-registers the MCP entry, then checks again. Run it after updating Synapse or moving its folder.
+
+## Uninstalling
+
+```bash
+synapse uninstall [--agent A] [--global] [--dry-run]
+```
+
+Removes what setup installed in the scope, backing changed files up as `*.synapse-backup`:
+
+- Synapse's hook entries (your other hooks stay; Antigravity's `synapse` entry and Copilot's `~/.copilot/hooks/synapse.json` go whole).
+- MCP entries: `claude mcp remove` / `devin mcp remove` for those agents, and the `synapse` entry or `[mcp_servers.synapse]` table elsewhere. Copilot's entry is user-level, so it goes with `--global`.
+- With `--global`, Devin's `mcp__synapse__*` allow rules.
+- Without `--agent`, in project scope, also the git `post-commit` block and the instruction blocks. A file left empty is deleted; an `@AGENTS.md` import line is removed only when `AGENTS.md` itself was deleted. With `--agent`, instruction files are left alone, since several agents share them.
+
+Memories in `~/.synapse/synapse.db` are never touched; the command prints the path.
+
 ## Troubleshooting
 
 | Symptom | Check |
 |---|---|
+| Anything setup-related | `synapse doctor agents` in the project (and with `--global`); `--fix` repairs it |
 | Tools missing | Claude: `claude mcp list`. Cursor: Settings → MCP. Codex: `[mcp_servers.synapse]` in `config.toml`. Then restart the agent |
 | Codex hooks don't run | Approve them in `/hooks`. For project setup, the project must be trusted |
 | Devin events recorded twice | Synapse hooks exist in both Claude and Devin config; keep one. `synapse setup devin` and `setup claude` print which files |

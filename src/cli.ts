@@ -47,6 +47,10 @@ Usage: synapse <command> [options]
   setup git [--dry-run]           Install a git post-commit hook that records each commit as a memory (any agent)
   instructions                    Print the memory instructions setup adds (for a global CLAUDE.md / AGENTS.md)
   doctor                          Diagnose environment
+  doctor agents [--agent A] [--global] [--fix]
+                                  Check each agent's hooks, MCP entry, instructions and the git hook; --fix repairs them
+  uninstall [--agent A] [--global] [--dry-run]
+                                  Remove what setup installed (memories are kept)
 
 Env: SYNAPSE_HOME (default ~/.synapse), SYNAPSE_DB, SYNAPSE_MODE, SYNAPSE_HOOK_INJECT=full|minimal|silent
 `;
@@ -64,7 +68,7 @@ async function main(): Promise<void> {
       count: { type: 'string' }, since: { type: 'string' }, summary: { type: 'string' }, archive: { type: 'boolean' },
       out: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, scope: { type: 'string' }, text: { type: 'string' },
       applies: { type: 'string' }, evidence: { type: 'string' }, reason: { type: 'string' }, state: { type: 'string' }, query: { type: 'string' },
-      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, event: { type: 'string' }, 'allow-tools': { type: 'boolean' }, 'no-instructions': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, event: { type: 'string' }, fix: { type: 'boolean' }, 'allow-tools': { type: 'boolean' }, 'no-instructions': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     },
   });
   const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : undefined);
@@ -119,7 +123,9 @@ async function main(): Promise<void> {
     console.log(SYNAPSE_INSTRUCTIONS);
     return;
   }
+  if (cmd === 'doctor' && pos[0] === 'agents') return doctorAgentsCmd(str('agent'), Boolean(v.global), Boolean(v.fix));
   if (cmd === 'doctor') return doctor();
+  if (cmd === 'uninstall') return uninstallCmd(str('agent'), Boolean(v.global), Boolean(v['dry-run']));
 
   const { getDb } = await import('./db.js');
   const { detectProject } = await import('./project.js');
@@ -325,6 +331,70 @@ async function setup(agent: string | undefined, global: boolean, dryRun: boolean
   console.log(`synapse setup ${agent}${global ? ' --global' : ''}${dryRun ? ' (dry run)' : ''}`);
   for (const c of report.changes) console.log(`  • ${c}`);
   for (const n of report.notes) console.log(`  → ${n}`);
+}
+
+function setupOptions(global: boolean, dryRun = false) {
+  return { global, dryRun, cwd: process.cwd(), home: os.homedir(), node: process.execPath, script: fileURLToPath(import.meta.url), useAgentCli: true };
+}
+
+async function agentArg(agent: string | undefined, usage: string) {
+  const { isAgentId } = await import('./agents.js');
+  if (agent === undefined || isAgentId(agent) || agent === 'git') return { ok: true as const, agent };
+  console.error(usage);
+  process.exitCode = 1;
+  return { ok: false as const };
+}
+
+async function doctorAgentsCmd(agentFlag: string | undefined, global: boolean, fix: boolean): Promise<void> {
+  const a = await agentArg(agentFlag, 'Usage: synapse doctor agents [--agent A] [--global] [--fix]');
+  if (!a.ok) return;
+  const { doctorAgents, repairAgents } = await import('./doctor.js');
+  const o = setupOptions(global);
+  const icon = { ok: 'ok  ', warn: 'WARN', fail: 'FAIL', skip: '--  ' } as const;
+  const print = (health: ReturnType<typeof doctorAgents>) => {
+    const installed = health.filter((h) => h.installed);
+    for (const h of installed) {
+      console.log(`${h.agent}`);
+      for (const c of h.checks) console.log(`  ${icon[c.status]} ${c.what}: ${c.detail}`);
+    }
+    const absent = health.filter((h) => !h.installed).map((h) => h.agent);
+    if (absent.length) console.log(`not set up${global ? ' globally' : ' here'}: ${absent.join(', ')}`);
+    return installed.flatMap((h) => h.checks).filter((c) => c.status === 'fail' || c.status === 'warn').length;
+  };
+  console.log(`synapse doctor agents${global ? ' --global' : ` (${o.cwd})`}`);
+  let health = doctorAgents(o, a.agent as never);
+  const problems = print(health);
+  if (!problems) return;
+  if (!fix) {
+    console.log(`\n${problems} problem${problems === 1 ? '' : 's'}. Run "synapse doctor agents --fix${global ? ' --global' : ''}" to repair (it re-runs setup for those agents).`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log('\nRepairing:');
+  for (const r of repairAgents(o, health)) {
+    console.log(`  ${r.agent}`);
+    for (const c of r.changes) console.log(`    • ${c}`);
+  }
+  console.log('\nAfter repair:');
+  health = doctorAgents(o, a.agent as never);
+  if (print(health)) process.exitCode = 1;
+}
+
+async function uninstallCmd(agentFlag: string | undefined, global: boolean, dryRun: boolean): Promise<void> {
+  const a = await agentArg(agentFlag, 'Usage: synapse uninstall [--agent A] [--global] [--dry-run]');
+  if (!a.ok) return;
+  const { uninstall } = await import('./doctor.js');
+  const { databasePath } = await import('./config.js');
+  console.log(`synapse uninstall${a.agent ? ` --agent ${a.agent}` : ''}${global ? ' --global' : ''}${dryRun ? ' (dry run)' : ''}`);
+  const reports = uninstall(setupOptions(global, dryRun), a.agent as never);
+  if (reports.length === 0) console.log('  nothing of Synapse\'s found in this scope');
+  for (const r of reports) {
+    console.log(`  ${r.agent}`);
+    for (const c of r.changes) console.log(`    • ${c}`);
+    for (const n of r.notes) console.log(`    → ${n}`);
+  }
+  if (a.agent && a.agent !== 'git') console.log('  Instruction blocks are shared between agents and were left in place; "synapse uninstall" without --agent removes them.');
+  console.log(`  Your memories are kept in ${databasePath()}. Delete that file to remove them too.`);
 }
 
 async function doctor(): Promise<void> {

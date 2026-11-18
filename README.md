@@ -51,17 +51,21 @@ synapse doctor    # check the install
 
 ```bash
 cd synapse && git pull && npm install && npm run build
+synapse doctor agents --fix    # in each project you set up (and with --global): picks up new hooks and paths
 ```
 
-Memories live in `~/.synapse/synapse.db`, so updating never touches them.
+Memories live in `~/.synapse/synapse.db`, so updating never touches them. `synapse doctor agents` checks each agent's hooks, MCP entry, instructions and the git hook; `--fix` repairs what's stale by re-running setup.
 
 ### Uninstall
 
 ```bash
+synapse uninstall --dry-run     # in each project you set up: preview, then run without --dry-run
+synapse uninstall --global      # if you used --global
 npm unlink -g synapse-memory
-claude mcp remove synapse -s local     # or -s user if you used --global
-rm -rf ~/.synapse                      # only if you also want to delete all memories
+rm -rf ~/.synapse               # only if you also want to delete all memories
 ```
+
+`synapse uninstall` removes exactly what setup added (hook entries, MCP entries, the instructions block, the git hook), backs files up first, and keeps your other hooks, servers and file content. `--agent <name>` removes one agent's hooks and MCP entry only.
 
 Also remove the `synapse ... hook` entries from `.claude/settings.local.json` or `~/.claude/settings.json`.
 

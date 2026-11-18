@@ -16,6 +16,8 @@ Commands that work on memory use the project of the **current directory** (see [
 | `synapse setup git [--dry-run]` | Install a git `post-commit` hook that records each commit as a memory, from any agent or person ([details](agent-integration.md#git-hook-commits-from-any-agent)) |
 | `synapse instructions` | Print the memory-instructions block setup adds to `CLAUDE.md` / `AGENTS.md`, to paste into a global file or another agent's rules |
 | `synapse doctor` | Check Node, SQLite/FTS5, database path, project detection and git |
+| `synapse doctor agents [--agent A] [--global] [--fix]` | Check what setup installed for each agent: hooks (all events present, paths valid), MCP entry (paths, `SYNAPSE_HOOKS` matching whether hooks exist), instructions block, git hook. Exits 1 on problems; `--fix` re-runs setup for the agents with problems ([details](agent-integration.md#checking-and-repairing-setup)) |
+| `synapse uninstall [--agent A] [--global] [--dry-run]` | Remove what setup installed, keeping your own config and all memories ([details](agent-integration.md#uninstalling)) |
 | `synapse version` | Print the version |
 
 ## Reading

@@ -25,10 +25,12 @@ export interface SetupOptions {
   allowTools?: boolean;
   /** Add Synapse's memory instructions to the project's CLAUDE.md / AGENTS.md (default true; project scope only). */
   instructions?: boolean;
+  /** Runs an agent's CLI (claude / devin) for doctor and uninstall; tests inject a fake. Defaults to the real CLI when useAgentCli. */
+  agentCli?: (args: string[], cwd: string) => string;
 }
 
 export interface SetupReport {
-  agent: AgentId | 'git';
+  agent: AgentId | 'git' | 'instructions';
   changes: string[];
   notes: string[];
 }
@@ -36,7 +38,7 @@ export interface SetupReport {
 const q = (s: string) => `"${s}"`;
 
 /** Set on every MCP registration that comes with hooks, so the server leaves the brief and session to them. */
-const HOOKS_ENV = { SYNAPSE_HOOKS: '1' };
+export const HOOKS_ENV = { SYNAPSE_HOOKS: '1' };
 
 export function hookCommand(o: SetupOptions, agent?: AgentId): string {
   return `${q(o.node)} ${q(o.script)} hook${agent && agent !== 'claude' ? ` --agent ${agent}` : ''}`;
@@ -47,7 +49,7 @@ export function isSynapseHookCommand(cmd: unknown): boolean {
   return typeof cmd === 'string' && /(\bsynapse|cli\.js"?)\s+hook(\s|$)/.test(cmd);
 }
 
-function readJson(file: string): Record<string, any> {
+export function readJson(file: string): Record<string, any> {
   if (!existsSync(file)) return {};
   const text = readFileSync(file, 'utf8').trim();
   if (!text) return {};
@@ -58,7 +60,7 @@ function readJson(file: string): Record<string, any> {
   }
 }
 
-function writeFile(file: string, content: string, o: SetupOptions, report: SetupReport, what: string): void {
+export function writeFile(file: string, content: string, o: SetupOptions, report: SetupReport, what: string): void {
   if (existsSync(file) && readFileSync(file, 'utf8') === content) {
     report.changes.push(`${what}: already up to date (${file})`);
     return;
@@ -74,14 +76,14 @@ function writeFile(file: string, content: string, o: SetupOptions, report: Setup
   report.changes.push(`${what}: wrote ${file}${backedUp ? ' (backup: .synapse-backup)' : ''}`);
 }
 
-function projectRoot(o: SetupOptions): string {
+export function projectRoot(o: SetupOptions): string {
   return detectProject(o.cwd).rootPath;
 }
 
 // ── Agent instructions (CLAUDE.md / AGENTS.md) ───────────────────────────
 
-const BLOCK_START = '<!-- synapse:start -->';
-const BLOCK_END = '<!-- synapse:end -->';
+export const BLOCK_START = '<!-- synapse:start -->';
+export const BLOCK_END = '<!-- synapse:end -->';
 
 /**
  * Hooks deliver context automatically, but storing what was learned is the agent's choice, and agents rarely
@@ -119,7 +121,7 @@ export function instructionsFileName(agent: AgentId): string {
 }
 
 /** Import line for AGENTS.md in the agents whose instruction files expand imports. */
-const AGENTS_IMPORT: Partial<Record<AgentId, string>> = { claude: '@AGENTS.md', gemini: '@./AGENTS.md' };
+export const AGENTS_IMPORT: Partial<Record<AgentId, string>> = { claude: '@AGENTS.md', gemini: '@./AGENTS.md' };
 
 function setupInstructions(agent: AgentId, o: SetupOptions, report: SetupReport): void {
   if (o.instructions === false) return;
@@ -152,15 +154,17 @@ function setupInstructions(agent: AgentId, o: SetupOptions, report: SetupReport)
 
 // ── Claude Code ──────────────────────────────────────────────────────────
 
-const CLAUDE_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreCompact', 'Stop', 'SessionEnd'];
+export const CLAUDE_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreCompact', 'Stop', 'SessionEnd'];
 
 /** Claude/Codex/Gemini nested format: { hooks: { Event: [{ matcher?, hooks: [{ type, command, timeout }] }] } } */
 function mergeNestedHooks(settings: Record<string, any>, events: Record<string, number>, command: string, matchers: Record<string, string> = {}): void {
   settings.hooks ??= {};
   for (const [event, timeout] of Object.entries(events)) {
     const groups: any[] = (settings.hooks[event] ??= []);
-    const present = groups.some((g) => (g?.hooks ?? []).some((h: any) => isSynapseHookCommand(h?.command)));
-    if (!present) groups.push({ ...(matchers[event] ? { matcher: matchers[event] } : {}), hooks: [{ type: 'command', command, timeout }] });
+    const ours = groups.flatMap((g) => (g?.hooks ?? []).filter((h: any) => isSynapseHookCommand(h?.command)));
+    // Refresh existing entries, so a moved install or a new Node path takes effect on re-run.
+    for (const h of ours) Object.assign(h, { command, timeout });
+    if (ours.length === 0) groups.push({ ...(matchers[event] ? { matcher: matchers[event] } : {}), hooks: [{ type: 'command', command, timeout }] });
   }
 }
 
@@ -194,7 +198,7 @@ export function setupClaude(o: SetupOptions): SetupReport {
 
 // ── Cursor ───────────────────────────────────────────────────────────────
 
-const CURSOR_EVENTS = ['sessionStart', 'beforeSubmitPrompt', 'afterFileEdit', 'afterShellExecution', 'preCompact', 'sessionEnd'];
+export const CURSOR_EVENTS = ['sessionStart', 'beforeSubmitPrompt', 'afterFileEdit', 'afterShellExecution', 'preCompact', 'sessionEnd'];
 
 export function setupCursor(o: SetupOptions): SetupReport {
   const report: SetupReport = { agent: 'cursor', changes: [], notes: [] };
@@ -208,7 +212,9 @@ export function setupCursor(o: SetupOptions): SetupReport {
   const command = hookCommand(o, 'cursor');
   for (const event of CURSOR_EVENTS) {
     const list: any[] = (hooks.hooks[event] ??= []);
-    if (!list.some((h) => isSynapseHookCommand(h?.command))) list.push({ command, timeout: 10 });
+    const ours = list.filter((h) => isSynapseHookCommand(h?.command));
+    for (const h of ours) Object.assign(h, { command, timeout: 10 });
+    if (ours.length === 0) list.push({ command, timeout: 10 });
   }
   writeFile(hooksFile, JSON.stringify(hooks, null, 2) + '\n', o, report, 'hooks');
 
@@ -232,7 +238,7 @@ export function setupCursor(o: SetupOptions): SetupReport {
 // ── Codex ────────────────────────────────────────────────────────────────
 
 /** Codex hooks use Claude's nested format; SessionEnd handlers are capped at 3 seconds. */
-const CODEX_EVENTS: Record<string, number> = { SessionStart: 10, UserPromptSubmit: 10, PostToolUse: 10, PreCompact: 10, Stop: 10, SessionEnd: 3 };
+export const CODEX_EVENTS: Record<string, number> = { SessionStart: 10, UserPromptSubmit: 10, PostToolUse: 10, PreCompact: 10, Stop: 10, SessionEnd: 3 };
 
 const tomlString = (s: string) => JSON.stringify(s);
 
@@ -274,7 +280,7 @@ export function setupCodex(o: SetupOptions): SetupReport {
 
 // ── Devin CLI ────────────────────────────────────────────────────────────
 
-const DEVIN_RULE_PREFIX = 'mcp__synapse__';
+export const DEVIN_RULE_PREFIX = 'mcp__synapse__';
 /** Older setups allowed every Synapse tool with one wildcard, which also pre-approved the approval gate. */
 const DEVIN_LEGACY_WILDCARD = `${DEVIN_RULE_PREFIX}*`;
 
@@ -283,7 +289,7 @@ export function devinAllowRules(): string[] {
   return toolNames('full').filter((n) => !GATED_TOOLS.includes(n)).map((n) => DEVIN_RULE_PREFIX + n);
 }
 
-const DEVIN_EVENTS: Record<string, number> = { SessionStart: 10, UserPromptSubmit: 10, PostToolUse: 10, PostCompaction: 10, SessionEnd: 10 };
+export const DEVIN_EVENTS: Record<string, number> = { SessionStart: 10, UserPromptSubmit: 10, PostToolUse: 10, PostCompaction: 10, SessionEnd: 10 };
 
 /** Does a hooks object (event -> matcher groups) contain a synapse hook? */
 function hasSynapseHooks(hooks: unknown): boolean {
@@ -293,7 +299,7 @@ function hasSynapseHooks(hooks: unknown): boolean {
   );
 }
 
-function fileHasSynapseHooks(file: string, key: 'hooks' | null): boolean {
+export function fileHasSynapseHooks(file: string, key: 'hooks' | null): boolean {
   try {
     const data = readJson(file);
     return hasSynapseHooks(key ? data[key] : data);
@@ -303,14 +309,14 @@ function fileHasSynapseHooks(file: string, key: 'hooks' | null): boolean {
 }
 
 /** Claude Code hook files that Devin CLI imports (read_config_from.claude, on by default). */
-function claudeFilesDevinImports(o: SetupOptions, scope: 'project' | 'user'): string[] {
+export function claudeFilesDevinImports(o: SetupOptions, scope: 'project' | 'user'): string[] {
   if (scope === 'user') return [path.join(o.home, '.claude.json'), path.join(o.home, '.claude', 'settings.json'), path.join(o.home, '.claude', 'settings.local.json')];
   const root = projectRoot(o);
   return [path.join(root, '.claude', 'settings.json'), path.join(root, '.claude', 'settings.local.json')];
 }
 
 /** Devin CLI's own hook files: project hooks.v1.json is the bare hooks object; config files use a "hooks" key. */
-function devinHookFiles(o: SetupOptions, scope: 'project' | 'user'): [string, 'hooks' | null][] {
+export function devinHookFiles(o: SetupOptions, scope: 'project' | 'user'): [string, 'hooks' | null][] {
   if (scope === 'user') return [[path.join(o.home, '.config', 'devin', 'config.json'), 'hooks']];
   const d = path.join(projectRoot(o), '.devin');
   return [[path.join(d, 'hooks.v1.json'), null], [path.join(d, 'config.json'), 'hooks'], [path.join(d, 'config.local.json'), 'hooks']];
@@ -398,7 +404,7 @@ export function setupDevin(o: SetupOptions): SetupReport {
 // ── GitHub Copilot CLI ───────────────────────────────────────────────────
 
 /** camelCase events: Copilot's native payloads. They carry no event name, so each command passes --event. */
-const COPILOT_EVENTS = ['sessionStart', 'userPromptSubmitted', 'postToolUse', 'postToolUseFailure', 'preCompact', 'sessionEnd'];
+export const COPILOT_EVENTS = ['sessionStart', 'userPromptSubmitted', 'postToolUse', 'postToolUseFailure', 'preCompact', 'sessionEnd'];
 
 export function copilotHookEntry(o: SetupOptions, event: string): Record<string, unknown> {
   const command = `${hookCommand(o, 'copilot')} --event ${event}`;
@@ -415,7 +421,9 @@ export function setupCopilot(o: SetupOptions): SetupReport {
   config.hooks ??= {};
   for (const event of COPILOT_EVENTS) {
     const list: any[] = (config.hooks[event] ??= []);
-    if (!list.some((h) => isSynapseHookCommand(h?.bash ?? h?.command))) list.push(copilotHookEntry(o, event));
+    const ours = list.filter((h) => isSynapseHookCommand(h?.bash ?? h?.command));
+    for (const h of ours) Object.assign(h, copilotHookEntry(o, event));
+    if (ours.length === 0) list.push(copilotHookEntry(o, event));
   }
   writeFile(hooksFile, JSON.stringify(config, null, 2) + '\n', o, report, 'hooks');
 
@@ -428,6 +436,7 @@ export function setupCopilot(o: SetupOptions): SetupReport {
   writeFile(mcpFile, JSON.stringify(mcp, null, 2) + '\n', o, report, 'mcp');
 
   report.notes.push('Start a new Copilot CLI session in the project; /mcp should list synapse.');
+  if (!o.global) report.notes.push('The MCP entry is user-level and marks hooks as installed (SYNAPSE_HOOKS=1), so in other projects Copilot gets no brief until you run "synapse setup copilot" there too. "synapse setup copilot --global" covers every project at once.');
   report.notes.push('The MCP server is registered for your user and binds to the directory Copilot starts in. Set SYNAPSE_DB in its env in ~/.copilot/mcp-config.json if you use a custom database path (Copilot passes servers only PATH).');
   if (!o.global) report.notes.push('Copilot loads project hooks only for trusted folders (approve the folder when asked, or add it to "trustedFolders" in ~/.copilot/config.json); untrusted, they are skipped silently. Keep .github/copilot/settings.local.json out of version control (absolute paths).');
   return report;
@@ -436,7 +445,7 @@ export function setupCopilot(o: SetupOptions): SetupReport {
 // ── Gemini CLI ───────────────────────────────────────────────────────────
 
 /** Gemini CLI timeouts are in milliseconds. */
-const GEMINI_EVENTS: Record<string, number> = { SessionStart: 10_000, BeforeAgent: 10_000, AfterTool: 10_000, PreCompress: 10_000, SessionEnd: 10_000 };
+export const GEMINI_EVENTS: Record<string, number> = { SessionStart: 10_000, BeforeAgent: 10_000, AfterTool: 10_000, PreCompress: 10_000, SessionEnd: 10_000 };
 const GEMINI_MATCHERS = { AfterTool: 'write_file|replace|edit|smart_edit|run_shell_command' };
 
 export function setupGemini(o: SetupOptions): SetupReport {
@@ -457,7 +466,7 @@ export function setupGemini(o: SetupOptions): SetupReport {
 // ── Antigravity ──────────────────────────────────────────────────────────
 
 /** Antigravity's payloads carry no event name, so each command passes --event. It has no session-end or compaction event. */
-const ANTIGRAVITY_LIFECYCLE = ['SessionStart', 'PreInvocation', 'Stop'];
+export const ANTIGRAVITY_LIFECYCLE = ['SessionStart', 'PreInvocation', 'Stop'];
 
 export function antigravityHooks(o: SetupOptions): Record<string, unknown> {
   const handler = (event: string) => ({ type: 'command', command: `${hookCommand(o, 'antigravity')} --event ${event}`, timeout: 10 });
@@ -492,8 +501,8 @@ export function setupAntigravity(o: SetupOptions): SetupReport {
 
 // ── Git post-commit hook (any agent, and people) ─────────────────────────
 
-const GIT_START = '# synapse:start';
-const GIT_END = '# synapse:end';
+export const GIT_START = '# synapse:start';
+export const GIT_END = '# synapse:end';
 
 /** The lines setup puts in post-commit: ingest recent commits in the background, never failing or slowing the commit. */
 export function gitHookBlock(o: SetupOptions): string {
@@ -540,6 +549,19 @@ export function setupGit(o: SetupOptions): SetupReport {
   if (!o.dryRun) chmodSync(file, 0o755);
   report.notes.push('Each commit now becomes a memory (commit messages are the content: descriptive messages make better memories). Existing history: synapse ingest-git --count 50.');
   return report;
+}
+
+/** The hook events setup installs for each agent (what `synapse doctor agents` expects to find). */
+export function expectedHookEvents(agent: AgentId): string[] {
+  switch (agent) {
+    case 'claude': return CLAUDE_EVENTS;
+    case 'cursor': return CURSOR_EVENTS;
+    case 'codex': return Object.keys(CODEX_EVENTS);
+    case 'devin': return Object.keys(DEVIN_EVENTS);
+    case 'copilot': return COPILOT_EVENTS;
+    case 'gemini': return Object.keys(GEMINI_EVENTS);
+    case 'antigravity': return [...ANTIGRAVITY_LIFECYCLE, 'PostToolUse'];
+  }
 }
 
 export function runSetup(agent: AgentId, o: SetupOptions): SetupReport {
