@@ -1,6 +1,6 @@
 /**
- * GitHub Copilot CLI and Gemini CLI hook adapters and setup. Payload shapes follow each agent's hook reference
- * (docs.github.com copilot-cli hooks reference; geminicli.com hooks reference); neither was run live.
+ * GitHub Copilot CLI and Gemini CLI hook adapters and setup. Copilot payloads were verified against Copilot CLI
+ * 1.0.114 (see "real payloads"); Gemini shapes follow geminicli.com's hooks reference and were not run live.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -72,6 +72,33 @@ describe('Copilot CLI adapter (camelCase payloads, event from --event)', () => {
   it('ignores events it has no use for', () => {
     expect(normalizeHookPayload('copilot', { ...base(), hook_event_name: 'agentStop' })).toEqual([]);
     expect(normalizeHookPayload('copilot', { ...base() })).toEqual([]);
+  });
+});
+
+describe('Copilot CLI real payloads (captured from Copilot CLI 1.0.114)', () => {
+  it('captures apply_patch edits, a failing command reported as "success", and skips reads and tool errors', () => {
+    const s = { sessionId: '014f2abe', timestamp: 1795020514275, cwd: dir };
+    // Order as fired: userPromptSubmitted arrives before sessionStart.
+    run('copilot', { ...s, hook_event_name: 'userPromptSubmitted', prompt: 'Change pay to return 2, add src/retry.ts, run npm test' });
+    expect(JSON.parse(run('copilot', { ...s, hook_event_name: 'sessionStart', source: 'new', initialPrompt: 'Change pay…' })!).additionalContext).toContain('# Synapse brief');
+    run('copilot', { ...s, hook_event_name: 'postToolUse', toolCallId: 'c1', toolName: 'view', toolArgs: { path: `${dir}/src/pay.ts` }, toolResult: { resultType: 'success', textResultForLlm: 'export const pay = () => 1;\n' } });
+    run('copilot', { ...s, hook_event_name: 'postToolUseFailure', toolCallId: 'c2', toolName: 'glob', toolArgs: { pattern: 'src/retry.ts', paths: dir }, error: 'rg: IO error' });
+    run('copilot', {
+      ...s, hook_event_name: 'postToolUse', toolCallId: 'c3', toolName: 'apply_patch',
+      toolArgs: `*** Begin Patch\n*** Update File: ${dir}/src/pay.ts\n@@\n-export const pay = () => 1;\n+export const pay = () => 2;\n*** Add File: ${dir}/src/retry.ts\n+export const RETRIES = 3;\n*** End Patch`,
+      toolResult: { resultType: 'success', textResultForLlm: `Added 1 file(s): ${dir}/src/retry.ts` },
+    });
+    run('copilot', {
+      ...s, hook_event_name: 'postToolUse', toolCallId: 'c4', toolName: 'bash', toolArgs: { command: 'npm test', description: 'Run npm test as requested' },
+      toolResult: { resultType: 'success', textResultForLlm: 'npm error code ENOENT\nnpm error syscall open\n<shellId: 0 completed with exit code 254>' },
+    });
+    run('copilot', { ...s, hook_event_name: 'postToolUse', toolCallId: 'c5', toolName: 'bash', toolArgs: { command: 'npm run build' }, toolResult: { resultType: 'success', textResultForLlm: 'built\n<shellId: 1 completed with exit code 0>' } });
+    run('copilot', { ...s, hook_event_name: 'sessionEnd', reason: 'complete' });
+    expect(obs().map((o) => o.title).sort()).toEqual([
+      'Change pay to return 2, add src/retry.ts, run npm test', 'Command failed: npm test', 'Edited src/pay.ts', 'Ran: npm run build', 'Wrote src/retry.ts',
+    ]);
+    expect(session()).toMatchObject({ agent: 'copilot', status: 'completed' });
+    expect(session().summary).toMatch(/Touched 2 file\(s\): (src\/pay\.ts, src\/retry\.ts|src\/retry\.ts, src\/pay\.ts)/);
   });
 });
 

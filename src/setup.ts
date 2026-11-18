@@ -429,7 +429,7 @@ export function setupCopilot(o: SetupOptions): SetupReport {
 
   report.notes.push('Start a new Copilot CLI session in the project; /mcp should list synapse.');
   report.notes.push('The MCP server is registered for your user and binds to the directory Copilot starts in. Set SYNAPSE_DB in its env in ~/.copilot/mcp-config.json if you use a custom database path (Copilot passes servers only PATH).');
-  if (!o.global) report.notes.push('Copilot loads project hooks only for trusted folders. Keep .github/copilot/settings.local.json out of version control (absolute paths).');
+  if (!o.global) report.notes.push('Copilot loads project hooks only for trusted folders (approve the folder when asked, or add it to "trustedFolders" in ~/.copilot/config.json); untrusted, they are skipped silently. Keep .github/copilot/settings.local.json out of version control (absolute paths).');
   return report;
 }
 

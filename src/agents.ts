@@ -9,7 +9,8 @@
  *   devin   Devin CLI    — Claude-style events, lowercase tools (`exec`, `edit`, …), no `cwd`
  *                          (DEVIN_PROJECT_DIR instead); also imports Claude Code's hooks
  *   copilot GitHub Copilot CLI — camelCase events and fields, no event name in the payload (setup passes
- *                          `--event`); tools `bash`, `edit`, `create`; `toolArgs` may be a JSON string
+ *                          `--event`); tools `bash`, `edit`, `create`, or `apply_patch` (GPT models, verified
+ *                          on 1.0.114); `toolArgs` is an object, or the raw patch text for `apply_patch`
  *   gemini  Gemini CLI   — snake_case fields; `BeforeAgent`, `AfterTool`, `PreCompress`; tools
  *                          `write_file`, `replace`, `run_shell_command`
  */
@@ -117,14 +118,17 @@ export function parseApplyPatch(text: string): PatchFile[] {
   return files;
 }
 
+/** One Claude-style Write/Edit per file an `apply_patch` call adds or updates (Codex, Devin, Copilot with GPT models). */
+function patchEdits(base: HookInput, toolInput: unknown): HookInput[] {
+  const patch = strings(toolInput).find((s) => s.includes('*** Begin Patch')) ?? strings(toolInput).join('\n');
+  return parseApplyPatch(patch)
+    .filter((f) => f.op !== 'delete')
+    .map((f) => ({ ...base, tool_name: f.op === 'add' ? 'Write' : 'Edit', tool_input: { file_path: f.path, new_string: f.added.trimEnd() } }));
+}
+
 function normalizeCodex(raw: Raw): HookInput[] {
   const input = { ...(raw as HookInput), agent: 'codex' as const };
-  if (input.hook_event_name === 'PostToolUse' && input.tool_name === 'apply_patch') {
-    const patch = strings(raw.tool_input).find((s) => s.includes('*** Begin Patch')) ?? strings(raw.tool_input).join('\n');
-    return parseApplyPatch(patch)
-      .filter((f) => f.op !== 'delete')
-      .map((f) => ({ ...input, tool_name: f.op === 'add' ? 'Write' : 'Edit', tool_input: { file_path: f.path, new_string: f.added.trimEnd() } }));
-  }
+  if (input.hook_event_name === 'PostToolUse' && input.tool_name === 'apply_patch') return patchEdits(input, raw.tool_input);
   return [input];
 }
 
@@ -169,12 +173,8 @@ function normalizeDevin(raw: Raw, env: NodeJS.ProcessEnv): HookInput[] {
       const content = pick(input, CONTENT_KEYS) ?? edits;
       return [{ ...base, tool_name: tool === 'write' ? 'Write' : 'Edit', tool_input: { file_path: file, new_string: content } }];
     }
-    case 'apply_patch': {
-      const patch = strings(input).find((s) => s.includes('*** Begin Patch')) ?? strings(input).join('\n');
-      return parseApplyPatch(patch)
-        .filter((f) => f.op !== 'delete')
-        .map((f) => ({ ...base, tool_name: f.op === 'add' ? 'Write' : 'Edit', tool_input: { file_path: f.path, new_string: f.added.trimEnd() } }));
-    }
+    case 'apply_patch':
+      return patchEdits(base, input);
     default:
       // Reads, searches, MCP calls (incl. Synapse's own), process control: nothing to capture.
       return [];
@@ -227,16 +227,22 @@ function normalizeCopilot(raw: Raw): HookInput[] {
   if (event !== 'PostToolUse') return [base];
 
   const tool = str(raw.toolName) ?? str(raw.tool_name) ?? '';
-  const input = objectArgs(raw.toolArgs ?? raw.tool_input);
+  const args = raw.toolArgs ?? raw.tool_input;
+  const input = objectArgs(args);
   switch (tool) {
     case 'bash':
     case 'Bash': {
       const result = objectArgs(raw.toolResult ?? raw.tool_result);
       const resultType = str(result.resultType) ?? str(result.result_type);
-      const failed = /Failure$/.test(rawEvent) || (resultType !== undefined && resultType !== 'success');
       const output = [str(result.textResultForLlm) ?? str(result.text_result_for_llm), str(raw.error)].filter(Boolean).join('\n');
-      return [{ ...base, tool_name: 'Bash', tool_input: { command: pick(input, ['command', 'cmd']) ?? '' }, tool_response: { output, ...(failed ? { success: false } : {}) } }];
+      // A failing command still reports resultType "success"; its output ends "<shellId: 0 completed with exit code N>".
+      const code = output.match(/(?:completed|exited) with exit code (-?\d+)/i);
+      const failed = /Failure$/.test(rawEvent) || (resultType !== undefined && resultType !== 'success');
+      const status = code ? { exit_code: Number(code[1]) } : failed ? { success: false } : {};
+      return [{ ...base, tool_name: 'Bash', tool_input: { command: pick(input, ['command', 'cmd']) ?? '' }, tool_response: { output, ...status } }];
     }
+    case 'apply_patch':
+      return patchEdits(base, args);
     case 'edit':
     case 'str_replace':
     case 'Edit':
