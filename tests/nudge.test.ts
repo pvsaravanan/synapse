@@ -147,6 +147,9 @@ describe('commandKey', () => {
     expect(commandKey('cd app && CI=1 npm test >/dev/null')).toBe('npm test');
     expect(commandKey('pytest -x tests/test_api.py')).toBe('pytest -x tests/test_api.py');
     expect(commandKey('ls')).toBe('ls');
+    // Environment setup steps aren't the command (seen live: "Fixed: source ~/.nvm/nvm.sh").
+    expect(commandKey('source ~/.nvm/nvm.sh >/dev/null; nvm use 22 >/dev/null; npm test')).toBe('npm test');
+    expect(commandKey('. .venv/bin/activate && pytest -q')).toBe('pytest -q');
   });
 
   it('matches a pass to a failure written differently (as seen live in Claude Code)', () => {

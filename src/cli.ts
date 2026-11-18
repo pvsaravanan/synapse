@@ -46,6 +46,7 @@ Usage: synapse <command> [options]
                                   Register the MCP server + hooks, and add memory instructions to CLAUDE.md / AGENTS.md / GEMINI.md
   setup git [--dry-run]           Install a git post-commit hook that records each commit as a memory (any agent)
   instructions                    Print the memory instructions setup adds (for a global CLAUDE.md / AGENTS.md)
+  ui [--port N] [--open]          Browse and curate memory in a local web page
   consolidate [--dry-run]         Merge ended sessions' auto-captured edit records per area; archive older duplicate command records
   doctor                          Diagnose environment
   doctor agents [--agent A] [--global] [--fix]
@@ -69,7 +70,7 @@ async function main(): Promise<void> {
       count: { type: 'string' }, since: { type: 'string' }, summary: { type: 'string' }, archive: { type: 'boolean' },
       out: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, scope: { type: 'string' }, text: { type: 'string' },
       applies: { type: 'string' }, evidence: { type: 'string' }, reason: { type: 'string' }, state: { type: 'string' }, query: { type: 'string' },
-      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, event: { type: 'string' }, fix: { type: 'boolean' }, 'allow-tools': { type: 'boolean' }, 'no-instructions': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, event: { type: 'string' }, fix: { type: 'boolean' }, port: { type: 'string' }, open: { type: 'boolean' }, 'allow-tools': { type: 'boolean' }, 'no-instructions': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     },
   });
   const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : undefined);
@@ -127,6 +128,20 @@ async function main(): Promise<void> {
   if (cmd === 'doctor' && pos[0] === 'agents') return doctorAgentsCmd(str('agent'), Boolean(v.global), Boolean(v.fix));
   if (cmd === 'doctor') return doctor();
   if (cmd === 'uninstall') return uninstallCmd(str('agent'), Boolean(v.global), Boolean(v['dry-run']));
+  if (cmd === 'ui') {
+    const { getDb } = await import('./db.js');
+    const { detectProject } = await import('./project.js');
+    const { startUi } = await import('./ui.js');
+    const port = str('port') ? Number(str('port')) : 0;
+    const { url } = await startUi({ db: getDb(), project: detectProject(process.cwd()), port });
+    console.log(`Synapse UI: ${url}`);
+    console.log('Local only (127.0.0.1); the link carries this run\'s access token. Ctrl+C to stop.');
+    if (v.open) {
+      const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
+      try { execFileSync(opener, [url], { stdio: 'ignore' }); } catch { /* print only */ }
+    }
+    return;
+  }
 
   const { getDb } = await import('./db.js');
   const { detectProject } = await import('./project.js');

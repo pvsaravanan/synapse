@@ -70,6 +70,7 @@ Commands that work on memory use the project of the **current directory** (see [
 | Command | Description |
 |---|---|
 | `synapse retention [--archive]` | Show retention zones; archive expired memories |
+| `synapse ui [--port N] [--open]` | Browse and curate memory in a local web page ([details](#synapse-ui)) |
 | `synapse consolidate [--dry-run]` | Merge ended sessions' auto-captured edit records per area, and archive older duplicate command records ([consolidation](concepts.md#consolidation)). Runs automatically when a session ends |
 | `synapse export [--out FILE]` | Write this project's observations, sessions, checkpoints and long-term items as JSON (stdout by default) |
 | `synapse import <file> [--project ID]` | Import a bundle into this project or another. Topic and duplicate rules apply, so re-importing is safe |
@@ -91,3 +92,20 @@ synapse store --type decision --entity storage --topic decisions/storage/engine 
 cd old-repo && synapse export --out /tmp/mem.json
 cd ../new-repo && synapse import /tmp/mem.json
 ```
+
+## synapse ui
+
+```bash
+synapse ui [--port N] [--open]
+```
+
+Starts a local web page for the project in the current directory (any project can be picked from the header):
+
+- **Memories:** search and filter by type, status and source; open a memory to see its narrative, facts, files, history (what it replaced or was replaced by) and feedback.
+- **Changed since:** memories whose files changed after they were stored, with **Still true** (verified) and **Outdated** buttons. Only the project `synapse ui` was started in can be checked, since only its folder is known.
+- **Candidates:** auto-captured records, with **Keep** to qualify the useful ones.
+- **Sessions:** each session's agent, summary, checkpoints and records.
+- **Long-term:** proposals to approve or reject, and approved items to retire, each with a required reason (recorded as "via synapse ui").
+
+Every memory can be resolved, archived or reopened. The server listens on `127.0.0.1` only, answers only requests addressed to a local host name, and needs the access token in the printed URL for every API call, so other websites can't read or change your memory. The token changes each run. Stop it with Ctrl+C.
+
