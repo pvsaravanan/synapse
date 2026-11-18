@@ -1,12 +1,18 @@
 /**
  * Agents without hooks: the MCP server delivers the brief and runs one session per server process.
  */
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type DB } from '../src/db.js';
 import { createServer } from '../src/server.js';
-import { recentSessions } from '../src/sessions.js';
+import { detectProject } from '../src/project.js';
+import { listCheckpoints, recentSessions } from '../src/sessions.js';
+import type { ProjectInfo } from '../src/types.js';
 import { listObservations, storeObservation } from '../src/store.js';
 
 const project = { id: 'acme/app', name: 'app', rootPath: process.cwd() };
@@ -96,5 +102,111 @@ describe('with hooks (SYNAPSE_HOOKS=1)', () => {
     await call('synapse_store', { entityName: 'e', type: 'decision', title: 'A decision', narrative: 'n' });
     await client.close();
     expect(sessions()).toHaveLength(0);
+  });
+});
+
+describe('without hooks: edits from the working tree, rolling checkpoints', () => {
+  let repo: string;
+  let repoProject: ProjectInfo;
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
+  beforeEach(() => {
+    repo = mkdtempSync(path.join(os.tmpdir(), 'syn-wt-'));
+    git('init', '-q');
+    git('config', 'user.email', 't@example.com');
+    git('config', 'user.name', 't');
+    mkdirSync(path.join(repo, 'src'));
+    writeFileSync(path.join(repo, 'src/a.ts'), 'a\n');
+    writeFileSync(path.join(repo, 'src/b.ts'), 'b\n');
+    writeFileSync(path.join(repo, '.gitignore'), 'dist/\n');
+    git('add', '.');
+    git('commit', '-qm', 'init');
+    repoProject = detectProject(repo);
+  });
+
+  async function connectRepo() {
+    const server = createServer({ db, mode: 'lite', project: repoProject, hooks: false });
+    const [x, y] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'zed', version: '1' });
+    await Promise.all([server.connect(x), client.connect(y)]);
+    const call = async (name: string, args: Record<string, unknown> = {}) =>
+      ((await client.callTool({ name, arguments: args })) as { content: { text: string }[] }).content.map((c) => c.text).join('\n');
+    return { client, call };
+  }
+  const edited = () =>
+    listObservations(db, { projectId: repoProject.id, type: ['what-changed'], limit: 50, status: 'all' }).map((o) => o.filesModified[0]).sort();
+
+  it('records files changed between tool calls, but not ones already dirty, ignored or only committed', async () => {
+    writeFileSync(path.join(repo, 'src/b.ts'), 'dirty before the session\n');
+    const { client, call } = await connectRepo();
+    await call('synapse_search', { query: 'x' });
+    writeFileSync(path.join(repo, 'src/a.ts'), 'edited\n');
+    writeFileSync(path.join(repo, 'src/new.ts'), 'new\n');
+    mkdirSync(path.join(repo, 'dist'));
+    writeFileSync(path.join(repo, 'dist/out.js'), 'built');
+    await call('synapse_search', { query: 'x' });
+    expect(edited()).toEqual(['src/a.ts', 'src/new.ts']);
+    // Committing b.ts unchanged is not an edit; editing a.ts again updates its one record.
+    git('add', 'src/b.ts');
+    git('commit', '-qm', 'b');
+    writeFileSync(path.join(repo, 'src/a.ts'), 'edited again\n');
+    rmSync(path.join(repo, 'src/new.ts'));
+    await client.close();
+    expect(edited()).toEqual(['src/a.ts', 'src/new.ts']);
+    const [s] = recentSessions(db, repoProject.id, 1, false);
+    expect(s.summary).toContain('Touched 2 file(s)');
+    expect(s.agent).toBe('zed');
+  });
+
+  it("doesn't flag the session's own memories for its edits", async () => {
+    const { call } = await connectRepo();
+    await call('synapse_store', { entityName: 'a', type: 'decision', title: 'A stays tiny', narrative: 'n', filesModified: ['src/a.ts'] });
+    writeFileSync(path.join(repo, 'src/a.ts'), 'edited by the agent\n');
+    expect(await call('synapse_search', { query: 'tiny' })).not.toContain('changed since');
+  });
+
+  it('works outside git without tracking edits', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'syn-nogit-'));
+    const server = createServer({ db, mode: 'lite', project: detectProject(dir), hooks: false });
+    const [x, y] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'zed', version: '1' });
+    await Promise.all([server.connect(x), client.connect(y)]);
+    writeFileSync(path.join(dir, 'f.ts'), 'x');
+    await client.callTool({ name: 'synapse_search', arguments: { query: 'x' } });
+    expect(listObservations(db, { type: ['what-changed'], limit: 5, status: 'all' })).toHaveLength(0);
+  });
+
+  it("leads a later synapse_project_context with the session's progress (recovery after compaction)", async () => {
+    const { client, call } = await connectRepo();
+    expect(client.getInstructions()).toContain('call synapse_project_context again');
+    const first = await call('synapse_project_context', { task: 'Make module A handle empty input' });
+    expect(first).not.toContain('## Checkpoint');
+    writeFileSync(path.join(repo, 'src/a.ts'), 'handles empty input\n');
+    await call('synapse_store', { entityName: 'a', type: 'gotcha', title: 'Empty input crashed module A', narrative: 'n' });
+    const later = await call('synapse_project_context', { task: 'continue' });
+    expect(later).toMatch(/## Checkpoint\n- .*Goal: Make module A handle empty input\. Touched 1 file\(s\): src\/a\.ts\. Stored: #\d+ Empty input crashed module A/);
+    expect(listCheckpoints(db, repoProject.id)).toHaveLength(1);
+  });
+
+  it('writes a rolling checkpoint every 10 calls when something changed', async () => {
+    const { call } = await connectRepo();
+    for (let i = 0; i < 9; i++) await call('synapse_search', { query: 'x' });
+    expect(listCheckpoints(db, repoProject.id)).toHaveLength(0);
+    writeFileSync(path.join(repo, 'src/a.ts'), 'edited\n');
+    await call('synapse_search', { query: 'x' });
+    const [cp] = listCheckpoints(db, repoProject.id);
+    expect(cp.summary).toContain('src/a.ts');
+    // Nothing new: the next ten calls add no checkpoint.
+    for (let i = 0; i < 10; i++) await call('synapse_search', { query: 'x' });
+    expect(listCheckpoints(db, repoProject.id)).toHaveLength(1);
+  });
+
+  it('does not track edits with hooks installed', async () => {
+    const server = createServer({ db, mode: 'lite', project: repoProject, hooks: true });
+    const [x, y] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'claude-code', version: '1' });
+    await Promise.all([server.connect(x), client.connect(y)]);
+    writeFileSync(path.join(repo, 'src/a.ts'), 'edited\n');
+    await client.callTool({ name: 'synapse_search', arguments: { query: 'x' } });
+    expect(edited()).toEqual([]);
   });
 });

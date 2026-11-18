@@ -149,6 +149,28 @@ export function recordGoal(db: DB, projectId: string, sessionId: string, text: s
   return true;
 }
 
+/**
+ * Record that a session edited a project file: one rolling candidate per file per session (not one per edit).
+ * Its own memories naming the file are re-hashed, so the session's edits don't flag them.
+ */
+export function recordFileEdit(db: DB, project: ProjectInfo, sessionId: string | undefined, rel: string, title: string, narrative: string): void {
+  storeObservation(db, {
+    projectId: project.id,
+    entityName: entityForFile(rel),
+    type: 'what-changed',
+    title,
+    narrative,
+    filesModified: [rel],
+    rootPath: project.rootPath,
+    sessionId,
+    source: 'hook',
+    admissionState: 'candidate',
+    valueCategory: 'ephemeral',
+    topicKey: `hook/file/${rel}/${sessionId ?? 'nosession'}`,
+  });
+  if (sessionId) refreshSessionHashes(db, sessionId, project.rootPath, rel);
+}
+
 export function autoSummary(db: DB, project: ProjectInfo, sessionId: string): string | undefined {
   const obs = listObservations(db, { projectId: project.id, limit: 500, status: 'all' }).filter((o) => o.sessionId === sessionId);
   if (obs.length === 0) return undefined;
@@ -211,22 +233,7 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
         const rel = relPath(project, file);
         if (!rel) return {}; // scratch files, other repos, home config: not this project's history
         const snippet = stringify(ti.new_string ?? ti.content ?? ti.new_source ?? (Array.isArray(ti.edits) ? ti.edits.map((e: { new_string?: string }) => e.new_string).join('\n') : ''), 400);
-        storeObservation(db, {
-          projectId: project.id,
-          entityName: entityForFile(rel),
-          type: 'what-changed',
-          title: `${tool === 'Write' ? 'Wrote' : 'Edited'} ${rel}`,
-          narrative: snippet ? `Latest change excerpt:\n${snippet}` : `${tool} on ${rel}`,
-          filesModified: [rel],
-          rootPath: project.rootPath,
-          sessionId,
-          source: 'hook',
-          admissionState: 'candidate',
-          valueCategory: 'ephemeral',
-          // One rolling record per file per session instead of one per edit.
-          topicKey: `hook/file/${rel}/${sessionId ?? 'nosession'}`,
-        });
-        if (sessionId) refreshSessionHashes(db, sessionId, project.rootPath, rel);
+        recordFileEdit(db, project, sessionId, rel, `${tool === 'Write' ? 'Wrote' : 'Edited'} ${rel}`, snippet ? `Latest change excerpt:\n${snippet}` : `${tool} on ${rel}`);
         return {};
       }
 

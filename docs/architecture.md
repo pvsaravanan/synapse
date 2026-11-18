@@ -38,7 +38,8 @@
 | `src/agents.ts` | Per-agent hook adapters: detect the agent (incl. Devin via `DEVIN_PROJECT_DIR`), normalize Cursor, Codex and Devin payloads (including `apply_patch` parsing) and format each agent's response |
 | `src/hooks.ts` | Agent-neutral hook handling: brief injection, capture rules, failure detection, session summaries |
 | `src/setup.ts` | `synapse setup <agent>`: merge hooks and MCP config for Claude Code, Cursor, Codex and Devin CLI, and prevent duplicate hooks where Devin imports Claude's |
-| `src/server.ts` | MCP tool registration (lite and full) |
+| `src/server.ts` | MCP tool registration (lite and full); without hooks, the brief, the session and rolling checkpoints |
+| `src/worktree.ts` | Without hooks: detects edited files by comparing the git working tree between tool calls |
 | `src/cli.ts` | Command-line entry point |
 | `src/index.ts` | Public library exports |
 

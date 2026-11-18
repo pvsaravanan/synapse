@@ -180,7 +180,7 @@ Returns a key like `decisions/auth/session-model`. The prefix comes from the typ
 | `task` | string | (required) |
 | `maxTokens` | 200–4000 | 1200 |
 
-Returns the [task-lensed brief](concepts.md#the-project-context-brief).
+Returns the [task-lensed brief](concepts.md#the-project-context-brief). Without hooks, a later call in a session that already did work leads with that session's checkpoint, so an agent can recover after its context was summarized.
 
 ### `synapse_session_start`
 

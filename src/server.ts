@@ -7,7 +7,7 @@ import { getDb, openDatabase, type DB } from './db.js';
 import { formatDetail, formatIndex, formatTimeline, indexLine } from './disclosure.js';
 import { changesFor } from './freshness.js';
 import { ingestCommits } from './git.js';
-import { autoSummary, recordGoal } from './hooks.js';
+import { autoSummary, recordFileEdit, recordGoal } from './hooks.js';
 import * as graph from './graph.js';
 import {
   getLongTerm,
@@ -24,7 +24,7 @@ import {
 import { archiveExpired, exportProject, retentionReport } from './maintenance.js';
 import { detectProject } from './project.js';
 import { search } from './search.js';
-import { activeSession, endSession, getSession, recentSessions, startSession } from './sessions.js';
+import { activeSession, addCheckpoint, endSession, getSession, recentSessions, startSession } from './sessions.js';
 import {
   getObservations,
   promoteObservation,
@@ -37,6 +37,7 @@ import {
   timeline,
 } from './store.js';
 import { OBSERVATION_TYPES, type ProjectInfo } from './types.js';
+import { WorktreeTracker } from './worktree.js';
 
 type Text = { content: { type: 'text'; text: string }[]; isError?: boolean };
 const text = (t: string): Text => ({ content: [{ type: 'text', text: t }] });
@@ -59,7 +60,7 @@ const toolNameRegistry = new WeakMap<McpServer, string[]>();
 
 /** Every tool name the server registers in a mode (full = all). */
 export function toolNames(mode: ToolMode = 'full'): string[] {
-  const server = createServer({ db: openDatabase(':memory:'), mode, project: { id: 'x', name: 'x', rootPath: process.cwd() } });
+  const server = createServer({ db: openDatabase(':memory:'), mode, project: { id: 'x', name: 'x', rootPath: process.cwd() }, hooks: true });
   return [...(toolNameRegistry.get(server) ?? [])];
 }
 
@@ -71,6 +72,11 @@ const USAGE_HINT = [
   '- Before non-trivial work, call synapse_project_context with the task. Search before re-investigating a past bug or decision.',
   '- Store non-obvious fixes, gotchas and decisions with synapse_store as you go (name the files). End with synapse_session_end.',
 ].join('\n');
+const RECOVER_HINT = '- If your context was summarized or you lost track of the task, call synapse_project_context again: it includes this session\'s progress so far.';
+
+/** Without hooks, a rolling checkpoint is written at most this often (tool calls or ms), unless the brief asks for one. */
+const CHECKPOINT_EVERY_CALLS = 10;
+const CHECKPOINT_EVERY_MS = 5 * 60_000;
 
 export interface ServerOptions {
   db?: DB;
@@ -89,15 +95,43 @@ export function createServer(opts: ServerOptions = {}): McpServer {
   // Without hooks, the server stands in for them: the brief goes into its instructions (shown at session start by
   // clients that support them) or onto the first tool result, and one session spans the server process.
   const brief = hooks ? '' : buildProjectContext(db, project, '', { maxTokens: 700 }).text;
-  const server = new McpServer({ name: 'synapse', version: VERSION }, { instructions: brief ? `${USAGE_HINT}\n\n${brief}` : USAGE_HINT });
+  const instructions = hooks ? USAGE_HINT : `${USAGE_HINT}\n${RECOVER_HINT}${brief ? `\n\n${brief}` : ''}`;
+  const server = new McpServer({ name: 'synapse', version: VERSION }, { instructions });
   let ownSession: string | undefined;
   let briefed = hooks;
+  // Edits are detected by comparing the git working tree between tool calls, from the moment the server starts.
+  let tracker = hooks ? undefined : new WorktreeTracker(project.rootPath);
+  let sessionCalls = 0;
+  let checkpoint = { calls: 0, at: Date.now(), summary: '' };
   const clientName = () => server.server.getClientVersion()?.name ?? '';
   const ensureOwnSession = () => {
     if (hooks || (ownSession && getSession(db, ownSession)?.status === 'active')) return;
     ownSession = startSession(db, project.id, { agent: clientName() || 'mcp' }).id;
+    sessionCalls = 0;
+    checkpoint = { calls: 0, at: Date.now(), summary: '' };
+  };
+  const trackEdits = () => {
+    if (!tracker?.enabled || !ownSession) return;
+    const agent = clientName() || 'the agent';
+    for (const rel of tracker.poll()) {
+      recordFileEdit(db, project, ownSession, rel, `Edited ${rel}`,
+        `Changed in the working tree while ${agent} was connected (detected by the Synapse server, so it may include edits made outside the agent).`);
+    }
+  };
+  /** Rolling checkpoint of the server's own session: what a compaction would lose. Also keeps the session summary current. */
+  const writeCheckpoint = (force = false) => {
+    if (!ownSession) return;
+    checkpoint.calls++;
+    const due = force || checkpoint.calls >= CHECKPOINT_EVERY_CALLS || Date.now() - checkpoint.at >= CHECKPOINT_EVERY_MS;
+    if (!due) return;
+    const summary = autoSummary(db, project, ownSession);
+    if (!summary || summary === checkpoint.summary) return;
+    addCheckpoint(db, project.id, ownSession, { summary });
+    db.prepare('UPDATE sessions SET summary = ? WHERE id = ?').run(summary, ownSession);
+    checkpoint = { calls: 0, at: Date.now(), summary };
   };
   const endOwnSession = () => {
+    trackEdits();
     const id = ownSession;
     ownSession = undefined;
     if (!id || getSession(db, id)?.status !== 'active') return;
@@ -113,8 +147,13 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     names.push(name);
     const handler = args[args.length - 1] as (...a: unknown[]) => Promise<Text>;
     args[args.length - 1] = async (...a: unknown[]) => {
-      if (name !== 'synapse_session_start') ensureOwnSession();
+      if (name !== 'synapse_session_start') {
+        ensureOwnSession();
+        trackEdits();
+      }
       const result = await handler(...a);
+      sessionCalls++;
+      writeCheckpoint();
       if (briefed) return result;
       briefed = true;
       if (name === 'synapse_project_context' || CLIENTS_SHOWING_INSTRUCTIONS.has(clientName()) || result.isError) return result;
@@ -292,8 +331,11 @@ export function createServer(opts: ServerOptions = {}): McpServer {
       inputSchema: { task: z.string(), maxTokens: z.number().int().min(200).max(4000).optional() },
     },
     async ({ task, maxTokens }) => {
-      if (!hooks && ownSession) recordGoal(db, project.id, ownSession, task);
-      return text(buildProjectContext(db, project, task, { maxTokens }).text);
+      if (hooks || !ownSession) return text(buildProjectContext(db, project, task, { maxTokens }).text);
+      recordGoal(db, project.id, ownSession, task);
+      // A later call in a session that already did work (often after the agent's context was summarized) leads with its progress.
+      if (sessionCalls > 0) writeCheckpoint(true);
+      return text(buildProjectContext(db, project, task, { maxTokens, sessionId: sessionCalls > 0 ? ownSession : undefined }).text);
     },
   );
 
@@ -306,9 +348,16 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     },
     async ({ agent, projectRoot }) => {
       if (!hooks) endOwnSession();
-      if (projectRoot) project = detectProject(projectRoot);
+      if (projectRoot) {
+        project = detectProject(projectRoot);
+        if (!hooks) tracker = new WorktreeTracker(project.rootPath);
+      }
       const s = startSession(db, project.id, { agent: agent ?? (clientName() || undefined) });
-      if (!hooks) ownSession = s.id;
+      if (!hooks) {
+        ownSession = s.id;
+        sessionCalls = 0;
+        checkpoint = { calls: 0, at: Date.now(), summary: '' };
+      }
       const prev = recentSessions(db, project.id, 3).filter((p) => p.id !== s.id);
       return text(
         [`Session ${s.id} started for ${project.id}.`, prev.length ? '\nPrevious sessions:' : '\nNo previous session summaries.',

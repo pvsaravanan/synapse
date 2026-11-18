@@ -80,7 +80,7 @@ Hooks handle the automatic part: the brief at session start, capturing edits and
 
 Add `--global` to configure every project, or `--dry-run` to preview the changes. Setup merges into existing config (with backups) and pins absolute Node 22 paths, so it works even when your default `node` is older.
 
-Other MCP clients (Windsurf, VS Code Copilot, Gemini CLI, …) work too: without hooks, Synapse's MCP server delivers the brief itself and runs one session per connection. Run `synapse setup git` in a project to record every commit as a memory, from any agent.
+Other MCP clients (Windsurf, VS Code Copilot, Gemini CLI, …) work too: without hooks, Synapse's MCP server delivers the brief itself, runs one session per connection, detects edited files from the git working tree, and keeps a rolling checkpoint the agent can recover from after compaction. Run `synapse setup git` in a project to record every commit as a memory, from any agent.
 
 Then restart the agent. **Codex only:** approve the synapse hooks once in `/hooks`, then start a new thread.
 
