@@ -13,13 +13,16 @@
  *                          on 1.0.114); `toolArgs` is an object, or the raw patch text for `apply_patch`
  *   gemini  Gemini CLI   — snake_case fields; `BeforeAgent`, `AfterTool`, `PreCompress`; tools
  *                          `write_file`, `replace`, `run_shell_command`
+ *   antigravity Antigravity — camelCase (`conversationId`, `workspacePaths`, `toolCall`), no event name and no
+ *                          `cwd` (setup passes `--event`); context via `injectSteps`; no session-end or
+ *                          compaction event (`Stop` ends the loop and closes the session until the next event)
  */
 import type { HookInput } from './hooks.js';
 
-export const AGENTS = ['claude', 'cursor', 'codex', 'devin', 'copilot', 'gemini'] as const;
+export const AGENTS = ['claude', 'cursor', 'codex', 'devin', 'copilot', 'gemini', 'antigravity'] as const;
 export type AgentId = (typeof AGENTS)[number];
 
-export const AGENT_LABEL: Record<AgentId, string> = { claude: 'claude-code', cursor: 'cursor', codex: 'codex', devin: 'devin', copilot: 'copilot', gemini: 'gemini' };
+export const AGENT_LABEL: Record<AgentId, string> = { claude: 'claude-code', cursor: 'cursor', codex: 'codex', devin: 'devin', copilot: 'copilot', gemini: 'gemini', antigravity: 'antigravity' };
 
 type Raw = Record<string, unknown>;
 
@@ -291,12 +294,51 @@ function normalizeGemini(raw: Raw): HookInput[] {
   }
 }
 
+// ── Antigravity ──────────────────────────────────────────────────────────
+
+const ANTIGRAVITY_EVENTS: Record<string, string> = {
+  SessionStart: 'SessionStart', PreInvocation: 'UserPromptSubmit', PostToolUse: 'PostToolUse', Stop: 'SessionEnd',
+};
+
+function normalizeAntigravity(raw: Raw): HookInput[] {
+  const event = ANTIGRAVITY_EVENTS[str(raw.hook_event_name) ?? ''];
+  if (!event) return [];
+  const roots = Array.isArray(raw.workspacePaths) ? raw.workspacePaths.filter((r): r is string => typeof r === 'string') : [];
+  const base: HookInput = {
+    agent: 'antigravity', hook_event_name: event, session_id: str(raw.conversationId), cwd: roots[0] ?? str(raw.cwd), prompt: str(raw.lastUserInput),
+  };
+  if (event !== 'PostToolUse') return [base];
+
+  const call = objectArgs(raw.toolCall);
+  const args = objectArgs(call.args);
+  const file = str(args.TargetFile);
+  switch (str(call.name)) {
+    case 'write_to_file':
+      return file ? [{ ...base, tool_name: 'Write', tool_input: { file_path: file, new_string: str(args.CodeContent) ?? '' } }] : [];
+    case 'replace_file_content':
+      return file ? [{ ...base, tool_name: 'Edit', tool_input: { file_path: file, new_string: str(args.ReplacementContent) ?? '' } }] : [];
+    case 'multi_replace_file_content': {
+      const chunks = Array.isArray(args.ReplacementChunks) ? (args.ReplacementChunks as Raw[]) : [];
+      const text = chunks.map((c) => str(objectArgs(c).ReplacementContent) ?? '').filter(Boolean).join('\n');
+      return file ? [{ ...base, tool_name: 'Edit', tool_input: { file_path: file, new_string: text } }] : [];
+    }
+    case 'run_command': {
+      // PostToolUse carries no command output, only an `error` (e.g. "exit status 1") when the command failed.
+      const error = raw.error ? strings(raw.error).join('\n') || 'error' : undefined;
+      return [{ ...base, tool_name: 'Bash', tool_input: { command: str(args.CommandLine) ?? '' }, tool_response: error ? { output: error, success: false } : { output: '' } }];
+    }
+    default:
+      return [];
+  }
+}
+
 export function normalizeHookPayload(agent: AgentId, raw: Raw, env: NodeJS.ProcessEnv = process.env): HookInput[] {
   if (agent === 'cursor') return normalizeCursor(raw);
   if (agent === 'codex') return normalizeCodex(raw);
   if (agent === 'devin') return normalizeDevin(raw, env);
   if (agent === 'copilot') return normalizeCopilot(raw);
   if (agent === 'gemini') return normalizeGemini(raw);
+  if (agent === 'antigravity') return normalizeAntigravity(raw);
   return [{ ...(raw as HookInput), agent: 'claude' }];
 }
 
@@ -308,6 +350,7 @@ export function formatHookResult(agent: AgentId, rawEvent: string, result: { con
     return undefined;
   }
   if (agent === 'copilot' && rawEvent === 'sessionStart') return result.context ? JSON.stringify({ additionalContext: result.context }) : undefined;
+  if (agent === 'antigravity') return rawEvent === 'SessionStart' && result.context ? JSON.stringify({ injectSteps: [{ systemMessage: result.context }] }) : undefined;
   // Claude Code, Codex, Devin CLI, Gemini CLI and Copilot's PascalCase hooks share the hookSpecificOutput contract.
   if (rawEvent === 'SessionStart' && result.context) {
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: result.context } });

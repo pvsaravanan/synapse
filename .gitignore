@@ -14,4 +14,6 @@ dist/
 .devin/
 .gemini/
 .github/copilot/settings.local.json
+.agents/hooks.json
+.agents/mcp_config.json
 *.synapse-backup

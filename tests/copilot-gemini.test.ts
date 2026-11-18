@@ -1,6 +1,7 @@
 /**
- * GitHub Copilot CLI and Gemini CLI hook adapters and setup. Copilot payloads were verified against Copilot CLI
- * 1.0.114 (see "real payloads"); Gemini shapes follow geminicli.com's hooks reference and were not run live.
+ * GitHub Copilot CLI, Gemini CLI and Antigravity hook adapters and setup. Copilot payloads were verified against
+ * Copilot CLI 1.0.114 (see "real payloads"); Gemini and Antigravity shapes follow their official hooks references
+ * (geminicli.com, antigravity.google/docs/hooks) and were not run live.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -132,6 +133,47 @@ describe('Gemini CLI adapter', () => {
   });
 });
 
+describe('Antigravity adapter', () => {
+  const base = () => ({ conversationId: 'ag-1', workspacePaths: [dir], transcriptPath: '/t', artifactDirectoryPath: '/a', modelName: 'm', lastUserInput: 'Add input validation to the signup form' });
+
+  it('injects the brief through injectSteps at SessionStart and labels the session antigravity', () => {
+    const out = JSON.parse(run('antigravity', { ...base(), hook_event_name: 'SessionStart' })!);
+    expect(out.injectSteps[0].systemMessage).toContain('# Synapse brief');
+    expect(session()).toMatchObject({ id: 'ag-1', agent: 'antigravity', status: 'active' });
+    expect(run('antigravity', { ...base(), hook_event_name: 'PreInvocation', invocationNum: 1, initialNumSteps: 0 })).toBeUndefined();
+  });
+
+  it('records the goal, edits from the three file tools, and run_command (failed by error)', () => {
+    run('antigravity', { ...base(), hook_event_name: 'PreInvocation', invocationNum: 1 });
+    const tool = (name: string, args: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+      run('antigravity', { ...base(), hook_event_name: 'PostToolUse', stepIdx: 3, toolCall: { name, args }, ...extra });
+    tool('write_to_file', { TargetFile: path.join(dir, 'src/validate.ts'), Overwrite: false, CodeContent: 'export const valid = true;', Description: 'd' });
+    tool('replace_file_content', { TargetFile: path.join(dir, 'src/signup.ts'), TargetContent: 'a', ReplacementContent: 'validate(form)', StartLine: 1, EndLine: 2 });
+    tool('multi_replace_file_content', { TargetFile: 'src/form.ts', ReplacementChunks: [{ TargetContent: 'a', ReplacementContent: 'one' }, { TargetContent: 'b', ReplacementContent: 'two' }] });
+    tool('run_command', { CommandLine: 'npm test', Cwd: dir, WaitMsBeforeAsync: 500 }, { error: 'exit status 1' });
+    tool('run_command', { CommandLine: 'npm run build', Cwd: dir });
+    tool('view_file', { AbsolutePath: path.join(dir, 'src/signup.ts') });
+    expect(obs().map((o) => o.title).sort()).toEqual([
+      'Add input validation to the signup form', 'Command failed: npm test', 'Edited src/form.ts', 'Edited src/signup.ts', 'Ran: npm run build', 'Wrote src/validate.ts',
+    ]);
+    expect(obs().find((o) => o.title === 'Edited src/form.ts')!.narrative).toContain('one\ntwo');
+  });
+
+  it('Stop summarizes and closes the session; the next prompt reopens it', () => {
+    run('antigravity', { ...base(), hook_event_name: 'PreInvocation' });
+    run('antigravity', { ...base(), hook_event_name: 'Stop', executionNum: 1, terminationReason: 'done', fullyIdle: true });
+    expect(session()).toMatchObject({ status: 'completed' });
+    expect(session().summary).toContain('Goal: Add input validation to the signup form');
+    run('antigravity', { ...base(), hook_event_name: 'PreInvocation', lastUserInput: 'now add tests' });
+    expect(session().status).toBe('active');
+  });
+
+  it('ignores PreToolUse and unknown events', () => {
+    expect(normalizeHookPayload('antigravity', { ...base(), hook_event_name: 'PreToolUse', toolCall: { name: 'run_command', args: {} } })).toEqual([]);
+    expect(normalizeHookPayload('antigravity', base())).toEqual([]);
+  });
+});
+
 describe('CLI: --event for Copilot payloads', () => {
   it('routes a camelCase sessionStart through the real binary', () => {
     const out = execFileSync(process.execPath, [path.resolve('dist/cli.js'), 'hook', '--agent', 'copilot', '--event', 'sessionStart'], {
@@ -191,6 +233,29 @@ describe('setup copilot and gemini', () => {
     expect(s.hooks.AfterTool).toHaveLength(2);
     expect(s.hooks.AfterTool[1]).toEqual({ matcher: 'write_file|replace|edit|smart_edit|run_shell_command', hooks: [{ type: 'command', command: '"/opt/node" "/opt/synapse/cli.js" hook --agent gemini', timeout: 10000 }] });
     expect(s.mcpServers.synapse.env).toEqual({ SYNAPSE_PROJECT_ROOT: root(), SYNAPSE_HOOKS: '1' });
+  });
+
+  it('antigravity: a "synapse" entry in .agents/hooks.json (keeping other hooks) and .agents/mcp_config.json', () => {
+    const o = opts();
+    const hooksFile = path.join(root(), '.agents', 'hooks.json');
+    execFileSync('mkdir', ['-p', path.dirname(hooksFile)]);
+    writeFileSync(hooksFile, JSON.stringify({ lint: { PostToolUse: [{ matcher: 'write_to_file', hooks: [{ type: 'command', command: './lint.sh' }] }] } }));
+    runSetup('antigravity', o);
+    runSetup('antigravity', o);
+    const hooks = json(hooksFile);
+    expect(Object.keys(hooks)).toEqual(['lint', 'synapse']);
+    expect(hooks.synapse.SessionStart).toEqual([{ type: 'command', command: '"/opt/node" "/opt/synapse/cli.js" hook --agent antigravity --event SessionStart', timeout: 10 }]);
+    expect(hooks.synapse.PostToolUse[0].matcher).toBe('*');
+    expect(Object.keys(hooks.synapse).sort()).toEqual(['PostToolUse', 'PreInvocation', 'SessionStart', 'Stop']);
+    expect(json(path.join(root(), '.agents', 'mcp_config.json')).mcpServers.synapse.env).toEqual({ SYNAPSE_PROJECT_ROOT: root(), SYNAPSE_HOOKS: '1' });
+    expect(readFileSync(path.join(root(), 'AGENTS.md'), 'utf8')).toContain('<!-- synapse:start -->');
+  });
+
+  it('antigravity --global writes ~/.gemini/config', () => {
+    const o = opts({ global: true });
+    runSetup('antigravity', o);
+    expect(json(path.join(o.home, '.gemini', 'config', 'hooks.json')).synapse.Stop).toHaveLength(1);
+    expect(json(path.join(o.home, '.gemini', 'config', 'mcp_config.json')).mcpServers.synapse.env).toEqual({ SYNAPSE_HOOKS: '1' });
   });
 
   it('gemini: GEMINI.md gets the block, or imports AGENTS.md when that already has it', () => {

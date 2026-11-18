@@ -5,7 +5,7 @@ Synapse connects to coding agents in two ways:
 - an **MCP server**, which gives the agent its `synapse_*` tools
 - **lifecycle hooks**, which add automatic context and capture without the agent having to decide to use memory
 
-`synapse setup` installs both for **Claude Code**, **Cursor**, **Codex**, **Devin CLI**, **GitHub Copilot CLI** and **Gemini CLI**:
+`synapse setup` installs both for **Claude Code**, **Cursor**, **Codex**, **Devin CLI**, **GitHub Copilot CLI**, **Gemini CLI** and **Antigravity**:
 
 ```bash
 synapse setup claude   [--global] [--dry-run]
@@ -14,6 +14,7 @@ synapse setup codex    [--global] [--dry-run]
 synapse setup devin    [--global] [--dry-run] [--allow-tools]
 synapse setup copilot  [--global] [--dry-run]
 synapse setup gemini   [--global] [--dry-run]
+synapse setup antigravity [--global] [--dry-run]
 ```
 
 Without `--global`, setup configures the project in the current directory, including its [agent instructions](#agent-instructions). With `--global`, it configures every project for that agent. `--dry-run` prints what would change and writes nothing.
@@ -30,7 +31,8 @@ All agents share one memory store (`~/.synapse/synapse.db`), so a decision store
 | **Devin CLI** | `.devin/hooks.v1.json`, or `~/.config/devin/config.json` with `--global`. **Skipped** when Devin already imports Synapse's Claude Code hooks (see below) | `devin mcp add` (local scope: `.devin/mcp_config.local.json`; user scope with `--global`: `~/.config/devin/mcp_config.json`). Setup writes the file directly if the `devin` command isn't available |
 | **Copilot CLI** | The `hooks` field of `.github/copilot/settings.local.json`, or `~/.copilot/hooks/synapse.json` with `--global` | `~/.copilot/mcp-config.json` (user config, in both cases) |
 | **Gemini CLI** | `.gemini/settings.json`, or `~/.gemini/settings.json` with `--global` | The same file (`mcpServers.synapse`) |
-| **Instructions** (all agents, project scope) | A marked block in `CLAUDE.md` (Claude Code), `GEMINI.md` (Gemini CLI) or `AGENTS.md` (Cursor, Codex, Devin CLI, Copilot CLI) at the project root | |
+| **Antigravity** | A `synapse` entry in `.agents/hooks.json`, or `~/.gemini/config/hooks.json` with `--global` | `.agents/mcp_config.json`, or `~/.gemini/config/mcp_config.json` with `--global` |
+| **Instructions** (all agents, project scope) | A marked block in `CLAUDE.md` (Claude Code), `GEMINI.md` (Gemini CLI) or `AGENTS.md` (Cursor, Codex, Devin CLI, Copilot CLI, Antigravity) at the project root | |
 
 How setup behaves:
 
@@ -39,13 +41,13 @@ How setup behaves:
 - **Pins absolute paths.** Commands use the absolute paths of the Node binary and `cli.js` that ran setup, so they keep working when your shell's default `node` is older than 22.
 - **Binds the project.** Project-scoped MCP config sets `SYNAPSE_PROJECT_ROOT`, so the server knows which project it serves even when the agent starts it from elsewhere.
 - **Marks hooks as installed.** Every MCP registration gets `SYNAPSE_HOOKS=1`, so the server leaves the brief and the session to the hooks instead of doing that work itself ([agents without hooks](#agents-without-hooks)). Re-run setup after upgrading so older registrations get it. Codex's existing `[mcp_servers.synapse]` table isn't rewritten; setup tells you the line to add.
-- **Keep project files private.** The project-level files contain machine-specific absolute paths, so keep `.claude/`, `.cursor/`, `.codex/`, `.devin/`, `.gemini/` and `.github/copilot/settings.local.json` out of version control.
+- **Keep project files private.** The project-level files contain machine-specific absolute paths, so keep `.claude/`, `.cursor/`, `.codex/`, `.devin/`, `.gemini/`, `.github/copilot/settings.local.json`, `.agents/hooks.json` and `.agents/mcp_config.json` out of version control.
 
 ### Agent instructions
 
 Hooks deliver context automatically, but storing what was learned is the agent's own choice, and agents rarely make it unprompted. So setup adds a short Markdown block to the project's instructions file, telling the agent when to search, what to store (non-obvious fixes, gotchas, decisions, how things work), what not to store, how to handle "changed since" flags, and to leave long-term approval to you.
 
-- **Which file:** `CLAUDE.md` for Claude Code, `GEMINI.md` for Gemini CLI, `AGENTS.md` for Cursor, Codex, Devin CLI and Copilot CLI.
+- **Which file:** `CLAUDE.md` for Claude Code, `GEMINI.md` for Gemini CLI, `AGENTS.md` for Cursor, Codex, Devin CLI, Copilot CLI and Antigravity (which file Antigravity reads isn't documented).
 - **Merged, not replaced.** The block sits between `<!-- synapse:start -->` and `<!-- synapse:end -->`. Re-running setup refreshes it in place and leaves the rest of the file alone. A changed file is backed up first.
 - **One copy for Devin.** Devin CLI loads both `CLAUDE.md` and `AGENTS.md` as always-on rules. If `CLAUDE.md` already has the block, `setup devin` skips `AGENTS.md`. If `AGENTS.md` already has it, `setup claude` adds an `@AGENTS.md` import line to `CLAUDE.md` instead of a second copy (Claude Code expands the import; Devin sees only the line). Likewise, `setup gemini` writes an `@./AGENTS.md` import to `GEMINI.md` when `AGENTS.md` already has the block.
 - **Commit these files.** Unlike the hook and MCP config, they contain no machine paths, so teammates' agents get the same instructions.
@@ -60,7 +62,8 @@ Devin reads any file named `agents.md` (case-insensitive) as an AGENTS.md rule f
 - **Codex:** start Codex and **approve the synapse hooks once in `/hooks`**, since Codex reviews hooks it didn't install itself before running them. Then start a new thread. A project's `.codex/` folder only loads when the project is trusted.
 - **Devin CLI:** start a new session; `devin mcp list` should show `synapse`. Devin asks before each Synapse tool call, and non-interactive `devin -p` runs reject those calls. To pre-approve Synapse's tools, run `synapse setup devin --allow-tools`. It adds one `mcp__synapse__<tool>` rule per Synapse tool to `permissions.allow` in your **user** config (`~/.config/devin/config.json`), merged with your existing rules and backed up first. `synapse_lt_approve` is deliberately left out, so Devin still asks you before an agent approves a long-term memory (Devin doesn't honor Claude Code's always-ask marker, so this is how the gate holds there). Re-running replaces the `mcp__synapse__*` wildcard that older versions added, and drops rules for tools that no longer exist; re-run it after upgrading Synapse so new tools are covered. It deliberately never writes a project-level `permissions` block, because in Devin a project block replaces your user-level rules for that project instead of extending them.
 - **Copilot CLI:** start a new session in the project; `/mcp` should list `synapse`. Project hooks load only for **trusted folders**: approve the folder when Copilot asks, or add it to `trustedFolders` in `~/.copilot/config.json`. Until then Copilot skips them silently (its log says "Skipped repository hooks … is not trusted"); `--global` hooks don't need trust. The MCP server is registered in your user config rather than the project's `.mcp.json` or `.github/mcp.json`: those are meant to be committed, and Claude Code reads `.mcp.json` too. It binds to the directory Copilot starts in. Copilot passes MCP servers only `PATH`, so if you use a custom `SYNAPSE_DB`, add it to the server's `env` in `~/.copilot/mcp-config.json`.
-- **Gemini CLI:** start a new session; `/mcp` should list `synapse` and `/hooks` the Synapse hooks. Hooks need Gemini CLI 0.26 or later. Google moved consumer accounts from Gemini CLI to Antigravity CLI in June 2026; Antigravity uses a different hook format, which Synapse doesn't support yet, so this is for Gemini CLI with an API key or an enterprise license.
+- **Gemini CLI:** start a new session; `/mcp` should list `synapse` and `/hooks` the Synapse hooks. Hooks need Gemini CLI 0.26 or later. Google moved consumer accounts from Gemini CLI to Antigravity CLI in June 2026; Antigravity uses a different hook format (`synapse setup antigravity`), so this is for Gemini CLI with an API key or an enterprise license; use `synapse setup antigravity` for Antigravity.
+- **Antigravity:** restart it, or start a new Antigravity CLI session. Antigravity has no session-end or compaction event, so a session is summarized and closed each time the agent loop stops (`Stop`) and reopens on the next prompt, and there are no compaction checkpoints.
 
 ### Devin CLI and Claude Code hooks
 
@@ -74,16 +77,16 @@ By default, Devin CLI also **runs Claude Code's hooks** (from `.claude/settings*
 
 Each agent's events map onto the same behaviour:
 
-| Behaviour | Claude Code | Cursor | Codex | Devin CLI | Copilot CLI | Gemini CLI |
-|---|---|---|---|---|---|---|
-| Inject a project brief (≤700 tokens) at session start | `SessionStart` | `sessionStart` → `additional_context` | `SessionStart` → `additionalContext` | `SessionStart` → `additionalContext` | `sessionStart` → `additionalContext` | `SessionStart` → `additionalContext` |
-| Record the session's first substantial prompt as its goal | `UserPromptSubmit` | `beforeSubmitPrompt` | `UserPromptSubmit` | `UserPromptSubmit` | `userPromptSubmitted` | `BeforeAgent` |
-| Capture file edits | `PostToolUse` (Edit/Write/MultiEdit) | `afterFileEdit` | `PostToolUse` (`apply_patch`, split per file) | `PostToolUse` (`edit`, `write`, `notebook_edit`, `apply_patch`) | `postToolUse` (`edit`, `create`, `apply_patch`) | `AfterTool` (`replace`, `write_file`) |
-| Capture significant or failing commands | `PostToolUse` (Bash) | `afterShellExecution` | `PostToolUse` (Bash) | `PostToolUse` (`exec`) | `postToolUse`, `postToolUseFailure` (`bash`) | `AfterTool` (`run_shell_command`) |
-| Add a compaction checkpoint and refresh the session summary | `PreCompact` | `preCompact` | `PreCompact` | `PostCompaction` (falls back to Devin's own summary) | `preCompact` | `PreCompress` |
-| Close the session with a summary | `SessionEnd` | `sessionEnd` | `SessionEnd` (3-second limit) | `SessionEnd` (not fired in Devin cloud sessions) | `sessionEnd` | `SessionEnd` |
+| Behaviour | Claude Code | Cursor | Codex | Devin CLI | Copilot CLI | Gemini CLI | Antigravity |
+|---|---|---|---|---|---|---|---|
+| Inject a project brief (≤700 tokens) at session start | `SessionStart` | `sessionStart` → `additional_context` | `SessionStart` → `additionalContext` | `SessionStart` → `additionalContext` | `sessionStart` → `additionalContext` | `SessionStart` → `additionalContext` | `SessionStart` → `injectSteps` |
+| Record the session's first substantial prompt as its goal | `UserPromptSubmit` | `beforeSubmitPrompt` | `UserPromptSubmit` | `UserPromptSubmit` | `userPromptSubmitted` | `BeforeAgent` | `PreInvocation` (`lastUserInput`) |
+| Capture file edits | `PostToolUse` (Edit/Write/MultiEdit) | `afterFileEdit` | `PostToolUse` (`apply_patch`, split per file) | `PostToolUse` (`edit`, `write`, `notebook_edit`, `apply_patch`) | `postToolUse` (`edit`, `create`, `apply_patch`) | `AfterTool` (`replace`, `write_file`) | `PostToolUse` (`write_to_file`, `replace_file_content`, `multi_replace_file_content`) |
+| Capture significant or failing commands | `PostToolUse` (Bash) | `afterShellExecution` | `PostToolUse` (Bash) | `PostToolUse` (`exec`) | `postToolUse`, `postToolUseFailure` (`bash`) | `AfterTool` (`run_shell_command`) | `PostToolUse` (`run_command`; failure from `error`, no output) |
+| Add a compaction checkpoint and refresh the session summary | `PreCompact` | `preCompact` | `PreCompact` | `PostCompaction` (falls back to Devin's own summary) | `preCompact` | `PreCompress` | Not available |
+| Close the session with a summary | `SessionEnd` | `sessionEnd` | `SessionEnd` (3-second limit) | `SessionEnd` (not fired in Devin cloud sessions) | `sessionEnd` | `SessionEnd` | `Stop` (reopened by the next prompt) |
 
-Sessions use the agent's own id: `session_id` for Claude, Codex, Devin and Gemini, `sessionId` for Copilot, and `conversation_id` for Cursor. They're labelled `claude-code`, `cursor`, `codex`, `devin`, `copilot` or `gemini`. Any hook event other than `SessionEnd` for a session that already ended (a resume under the same id) reopens it, so its end summary also covers the work after resuming.
+Sessions use the agent's own id: `session_id` for Claude, Codex, Devin and Gemini, `sessionId` for Copilot, `conversationId` for Antigravity, and `conversation_id` for Cursor. They're labelled `claude-code`, `cursor`, `codex`, `devin`, `copilot`, `gemini` or `antigravity`. Any hook event other than `SessionEnd` for a session that already ended (a resume under the same id) reopens it, so its end summary also covers the work after resuming.
 
 Every compaction records a checkpoint. Whether the agent gets that checkpoint back depends on whether it fires `SessionStart` again after compaction:
 
@@ -106,6 +109,8 @@ Devin CLI's payloads were verified against a real run of devin 3000.12.57: `writ
 - Memories stored over MCP during the session join the hook session and appear in its summary.
 
 The PascalCase events (snake_case payloads with Claude tool names) are understood too.
+
+**Antigravity is implemented from its [hooks reference](https://antigravity.google/docs/hooks), not verified against a live run.** Its payloads carry no event name, so setup passes `--event`; the project comes from `workspacePaths[0]`, and the brief goes out as an `injectSteps` system message. `PostToolUse` runs for every tool (`matcher: "*"`) and keeps only the file tools and `run_command`.
 
 **Gemini CLI is implemented from its hook reference, not verified against a live run.** `AfterTool` is limited to the edit and shell tools by its matcher. A shell command's exit code is read from the `Exit Code: N` line of its result.
 

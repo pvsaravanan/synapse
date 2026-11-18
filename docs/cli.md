@@ -11,7 +11,7 @@ Commands that work on memory use the project of the **current directory** (see [
 | Command | Description |
 |---|---|
 | `synapse serve [--mode lite\|full]` | Start the stdio MCP server |
-| `synapse hook [--agent claude\|cursor\|codex\|devin\|copilot\|gemini] [--event E]` | Handle one agent hook event read as JSON from stdin, and reply in that agent's format. `--event` supplies the event name for payloads that lack it (Copilot CLI). Always exits 0 |
+| `synapse hook [--agent claude\|cursor\|codex\|devin\|copilot\|gemini\|antigravity] [--event E]` | Handle one agent hook event read as JSON from stdin, and reply in that agent's format. `--event` supplies the event name for payloads that lack it (Copilot CLI, Antigravity). Always exits 0 |
 | `synapse setup <claude\|cursor\|codex\|devin> [--global] [--dry-run] [--allow-tools] [--no-instructions]` | Install hooks, register the MCP server, and add memory instructions to the project's `CLAUDE.md` / `AGENTS.md` ([details](agent-integration.md)). `--no-instructions` skips the instructions. `--allow-tools` (Devin only) pre-approves Synapse's own tools, except `synapse_lt_approve`, in your user-level Devin permissions |
 | `synapse setup git [--dry-run]` | Install a git `post-commit` hook that records each commit as a memory, from any agent or person ([details](agent-integration.md#git-hook-commits-from-any-agent)) |
 | `synapse instructions` | Print the memory-instructions block setup adds to `CLAUDE.md` / `AGENTS.md`, to paste into a global file or another agent's rules |

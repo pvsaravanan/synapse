@@ -1,6 +1,6 @@
 /**
  * `synapse setup <agent>` — register the MCP server and lifecycle hooks with
- * Claude Code, Cursor, Codex, Devin CLI, GitHub Copilot CLI or Gemini CLI. Every write merges into existing config,
+ * Claude Code, Cursor, Codex, Devin CLI, GitHub Copilot CLI, Gemini CLI or Antigravity. Every write merges into existing config,
  * backs the file up first, and is idempotent. Commands use absolute paths to
  * the running Node binary and CLI so they work even when the shell's default
  * `node` is too old for node:sqlite.
@@ -113,7 +113,7 @@ export function mergeInstructions(existing: string): string {
   return body ? `${body}\n\n${block}\n` : `${block}\n`;
 }
 
-/** Claude Code reads CLAUDE.md, Gemini CLI reads GEMINI.md; Cursor, Codex, Devin CLI and Copilot CLI read AGENTS.md. */
+/** Claude Code reads CLAUDE.md, Gemini CLI reads GEMINI.md; Cursor, Codex, Devin CLI, Copilot CLI and Antigravity read AGENTS.md. */
 export function instructionsFileName(agent: AgentId): string {
   return agent === 'claude' ? 'CLAUDE.md' : agent === 'gemini' ? 'GEMINI.md' : 'AGENTS.md';
 }
@@ -454,6 +454,42 @@ export function setupGemini(o: SetupOptions): SetupReport {
   return report;
 }
 
+// ── Antigravity ──────────────────────────────────────────────────────────
+
+/** Antigravity's payloads carry no event name, so each command passes --event. It has no session-end or compaction event. */
+const ANTIGRAVITY_LIFECYCLE = ['SessionStart', 'PreInvocation', 'Stop'];
+
+export function antigravityHooks(o: SetupOptions): Record<string, unknown> {
+  const handler = (event: string) => ({ type: 'command', command: `${hookCommand(o, 'antigravity')} --event ${event}`, timeout: 10 });
+  return {
+    ...Object.fromEntries(ANTIGRAVITY_LIFECYCLE.map((e) => [e, [handler(e)]])),
+    // Every tool: the adapter keeps only file edits and run_command.
+    PostToolUse: [{ matcher: '*', hooks: [handler('PostToolUse')] }],
+  };
+}
+
+export function setupAntigravity(o: SetupOptions): SetupReport {
+  const report: SetupReport = { agent: 'antigravity', changes: [], notes: [] };
+  const base = o.global ? path.join(o.home, '.gemini', 'config') : path.join(projectRoot(o), '.agents');
+
+  // hooks.json maps hook names to their events; Synapse owns the "synapse" entry.
+  const hooksFile = path.join(base, 'hooks.json');
+  const hooks = readJson(hooksFile);
+  hooks.synapse = antigravityHooks(o);
+  writeFile(hooksFile, JSON.stringify(hooks, null, 2) + '\n', o, report, 'hooks');
+
+  const mcpFile = path.join(base, 'mcp_config.json');
+  const mcp = readJson(mcpFile);
+  mcp.mcpServers ??= {};
+  mcp.mcpServers.synapse = { command: o.node, args: [o.script, 'serve'], env: { ...(o.global ? {} : { SYNAPSE_PROJECT_ROOT: projectRoot(o) }), ...HOOKS_ENV } };
+  writeFile(mcpFile, JSON.stringify(mcp, null, 2) + '\n', o, report, 'mcp');
+
+  report.notes.push('Restart Antigravity (or start a new Antigravity CLI session) so the hooks and MCP server load.');
+  report.notes.push('Antigravity has no session-end or compaction event: a session is summarized each time the agent loop stops, and reopens on the next prompt. There are no compaction checkpoints.');
+  if (!o.global) report.notes.push('Keep .agents/hooks.json and .agents/mcp_config.json out of version control (absolute paths).');
+  return report;
+}
+
 // ── Git post-commit hook (any agent, and people) ─────────────────────────
 
 const GIT_START = '# synapse:start';
@@ -507,7 +543,7 @@ export function setupGit(o: SetupOptions): SetupReport {
 }
 
 export function runSetup(agent: AgentId, o: SetupOptions): SetupReport {
-  const run = { cursor: setupCursor, codex: setupCodex, devin: setupDevin, claude: setupClaude, copilot: setupCopilot, gemini: setupGemini }[agent];
+  const run = { cursor: setupCursor, codex: setupCodex, devin: setupDevin, claude: setupClaude, copilot: setupCopilot, gemini: setupGemini, antigravity: setupAntigravity }[agent];
   const report = run(o);
   setupInstructions(agent, o, report);
   return report;

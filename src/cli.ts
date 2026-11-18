@@ -17,7 +17,7 @@ const HELP = `synapse — local-first project memory for AI coding agents
 Usage: synapse <command> [options]
 
   serve [--mode lite|full]        Start the stdio MCP server
-  hook [--agent A] [--event E]    Handle an agent hook event (JSON on stdin); A: claude|cursor|codex|devin|copilot|gemini
+  hook [--agent A] [--event E]    Handle an agent hook event (JSON on stdin); A: claude|cursor|codex|devin|copilot|gemini|antigravity
   context [--task "..."]          Print the task-lensed project brief
   search <query> [--global] [--limit N] [--type T]
   store --type T --entity E --title "..." --narrative "..." [--topic K] [--facts a,b] [--files a,b]
@@ -42,7 +42,7 @@ Usage: synapse <command> [options]
   stats | projects                Counts for this project / all projects
   export [--out FILE]             Export this project's memories as JSON
   import <file> [--project ID]    Import an export bundle
-  setup <claude|cursor|codex|devin|copilot|gemini> [--global] [--dry-run] [--allow-tools (devin)] [--no-instructions]
+  setup <claude|cursor|codex|devin|copilot|gemini|antigravity> [--global] [--dry-run] [--allow-tools (devin)] [--no-instructions]
                                   Register the MCP server + hooks, and add memory instructions to CLAUDE.md / AGENTS.md / GEMINI.md
   setup git [--dry-run]           Install a git post-commit hook that records each commit as a memory (any agent)
   instructions                    Print the memory instructions setup adds (for a global CLAUDE.md / AGENTS.md)

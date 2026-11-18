@@ -1,6 +1,6 @@
 # Synapse
 
-Local-first memory for AI coding agents: an MCP server plus lifecycle hooks for Claude Code, Cursor, Codex, Devin CLI, GitHub Copilot CLI and Gemini CLI, backed by SQLite (`node:sqlite` with FTS5). User docs are in `docs/`; start with `docs/concepts.md`.
+Local-first memory for AI coding agents: an MCP server plus lifecycle hooks for Claude Code, Cursor, Codex, Devin CLI, GitHub Copilot CLI, Gemini CLI and Antigravity, backed by SQLite (`node:sqlite` with FTS5). User docs are in `docs/`; start with `docs/concepts.md`.
 
 ## Commands
 
@@ -32,7 +32,7 @@ Rebuild after changing `src/` when testing hooks or the MCP server live, because
 - **Hooks never block the agent.** A hook always exits 0; errors print only with `SYNAPSE_DEBUG=1`.
 - **Redact before writing.** Everything stored passes through `redactSecrets`.
 - **Live tests use a temp database** (`SYNAPSE_DB=...`), never the real `~/.synapse/synapse.db`.
-- Keep `.claude/`, `.cursor/`, `.codex/`, `.devin/`, `.gemini/` and `.github/copilot/settings.local.json` out of git: setup writes machine-specific absolute paths there.
+- Keep `.claude/`, `.cursor/`, `.codex/`, `.devin/`, `.gemini/`, `.github/copilot/settings.local.json`, `.agents/hooks.json` and `.agents/mcp_config.json` out of git: setup writes machine-specific absolute paths there.
 
 <!-- synapse:start -->
 ## Memory (Synapse)
