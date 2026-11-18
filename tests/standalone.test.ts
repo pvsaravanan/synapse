@@ -1,7 +1,7 @@
 /**
  * Agents without hooks: the MCP server delivers the brief and runs one session per server process.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type DB } from '../src/db.js';
 import { createServer } from '../src/server.js';
 import { detectProject } from '../src/project.js';
-import { listCheckpoints, recentSessions } from '../src/sessions.js';
+import { getSession, listCheckpoints, recentSessions, registerServerSession, startSession } from '../src/sessions.js';
 import type { ProjectInfo } from '../src/types.js';
 import { listObservations, storeObservation } from '../src/store.js';
 
@@ -123,8 +123,8 @@ describe('without hooks: edits from the working tree, rolling checkpoints', () =
     repoProject = detectProject(repo);
   });
 
-  async function connectRepo() {
-    const server = createServer({ db, mode: 'lite', project: repoProject, hooks: false });
+  async function connectRepo(pollMs?: number) {
+    const server = createServer({ db, mode: 'lite', project: repoProject, hooks: false, pollMs });
     const [x, y] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'zed', version: '1' });
     await Promise.all([server.connect(x), client.connect(y)]);
@@ -208,5 +208,68 @@ describe('without hooks: edits from the working tree, rolling checkpoints', () =
     writeFileSync(path.join(repo, 'src/a.ts'), 'edited\n');
     await client.callTool({ name: 'synapse_search', arguments: { query: 'x' } });
     expect(edited()).toEqual([]);
+  });
+});
+
+describe('without hooks: servers killed without shutting down (Copilot CLI sends SIGKILL)', () => {
+  let repo: string;
+  let repoProject: ProjectInfo;
+  beforeEach(() => {
+    repo = mkdtempSync(path.join(os.tmpdir(), 'syn-kill-'));
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    writeFileSync(path.join(repo, 'a.ts'), 'a');
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-qm', 'init'], { cwd: repo });
+    repoProject = detectProject(repo);
+  });
+  const connectRepo = async (pollMs?: number) => {
+    const server = createServer({ db, mode: 'lite', project: repoProject, hooks: false, pollMs });
+    const [x, y] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'copilot-cli', version: '1' });
+    await Promise.all([server.connect(x), client.connect(y)]);
+    return { client, call: (name: string, args: Record<string, unknown> = {}) => client.callTool({ name, arguments: args }) };
+  };
+  const deadPid = () => spawnSync(process.execPath, ['-e', '']).pid!;
+
+  it('keeps the session summary current after every call, without waiting for the close', async () => {
+    const { call } = await connectRepo();
+    await call('synapse_project_context', { task: 'Round payment amounts to cents' });
+    await call('synapse_store', { entityName: 'pay', type: 'gotcha', title: 'Amounts are integer cents', narrative: 'n' });
+    const [s] = recentSessions(db, repoProject.id, 1, false);
+    expect(s.status).toBe('active');
+    expect(s.summary).toMatch(/Goal: Round payment amounts to cents\. Stored: #\d+ Amounts are integer cents/);
+  });
+
+  it('the next server closes sessions whose server process is gone, keeping their summary', async () => {
+    const orphan = startSession(db, repoProject.id, { agent: 'copilot-cli' });
+    db.prepare('UPDATE sessions SET summary = ? WHERE id = ?').run('Goal: earlier work', orphan.id);
+    registerServerSession(db, orphan.id, deadPid());
+    const live = startSession(db, repoProject.id, { agent: 'copilot-cli' });
+    registerServerSession(db, live.id); // this test process: still running
+    const elsewhere = startSession(db, 'other/project', { agent: 'copilot-cli' });
+    registerServerSession(db, elsewhere.id, deadPid());
+    const { call } = await connectRepo();
+    await call('synapse_search', { query: 'x' });
+    expect(getSession(db, orphan.id)).toMatchObject({ status: 'completed', summary: 'Goal: earlier work' });
+    expect(getSession(db, live.id)!.status).toBe('active');
+    expect(getSession(db, elsewhere.id)!.status).toBe('active'); // closed by a server of that project
+    expect(db.prepare("SELECT count(*) AS n FROM meta WHERE key = ?").get(`server-session:${orphan.id}`)).toEqual({ n: 0 });
+  });
+
+  it('polls the working tree, catching an edit made after the last tool call', async () => {
+    const { call } = await connectRepo(50);
+    await call('synapse_search', { query: 'x' });
+    writeFileSync(path.join(repo, 'a.ts'), 'edited after the last call');
+    await new Promise((r) => setTimeout(r, 400));
+    const [s] = recentSessions(db, repoProject.id, 1, false);
+    expect(s.status).toBe('active');
+    expect(s.summary).toContain('Touched 1 file(s): a.ts');
+  });
+
+  it('a normal close releases the pid record', async () => {
+    const { client, call } = await connectRepo();
+    await call('synapse_search', { query: 'x' });
+    await client.close();
+    expect(db.prepare("SELECT count(*) AS n FROM meta WHERE key LIKE 'server-session:%'").get()).toEqual({ n: 0 });
   });
 });

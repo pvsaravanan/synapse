@@ -24,7 +24,17 @@ import {
 import { archiveExpired, exportProject, retentionReport } from './maintenance.js';
 import { detectProject } from './project.js';
 import { search } from './search.js';
-import { activeSession, addCheckpoint, endSession, getSession, recentSessions, startSession } from './sessions.js';
+import {
+  activeSession,
+  addCheckpoint,
+  closeOrphanedSessions,
+  endSession,
+  getSession,
+  recentSessions,
+  registerServerSession,
+  releaseServerSession,
+  startSession,
+} from './sessions.js';
 import {
   getObservations,
   promoteObservation,
@@ -77,6 +87,8 @@ const RECOVER_HINT = '- If your context was summarized or you lost track of the 
 /** Without hooks, a rolling checkpoint is written at most this often (tool calls or ms), unless the brief asks for one. */
 const CHECKPOINT_EVERY_CALLS = 10;
 const CHECKPOINT_EVERY_MS = 5 * 60_000;
+/** Without hooks, the working tree is also checked on this interval, for edits made after the agent's last tool call. */
+const POLL_MS = 15_000;
 
 export interface ServerOptions {
   db?: DB;
@@ -84,6 +96,8 @@ export interface ServerOptions {
   mode?: ToolMode;
   /** Lifecycle hooks are installed for this agent (default: SYNAPSE_HOOKS). Without them, the server delivers the brief and runs the session. */
   hooks?: boolean;
+  /** Without hooks: how often to check the working tree between tool calls (ms). */
+  pollMs?: number;
 }
 
 export function createServer(opts: ServerOptions = {}): McpServer {
@@ -103,12 +117,33 @@ export function createServer(opts: ServerOptions = {}): McpServer {
   let tracker = hooks ? undefined : new WorktreeTracker(project.rootPath);
   let sessionCalls = 0;
   let checkpoint = { calls: 0, at: Date.now(), summary: '' };
+  let summaryKept = '';
+  let poller: ReturnType<typeof setInterval> | undefined;
   const clientName = () => server.server.getClientVersion()?.name ?? '';
-  const ensureOwnSession = () => {
-    if (hooks || (ownSession && getSession(db, ownSession)?.status === 'active')) return;
-    ownSession = startSession(db, project.id, { agent: clientName() || 'mcp' }).id;
+  /** Adopt a session as the server's own: register its pid (for orphan cleanup) and start polling the working tree. */
+  const adopt = (id: string) => {
+    ownSession = id;
     sessionCalls = 0;
     checkpoint = { calls: 0, at: Date.now(), summary: '' };
+    summaryKept = '';
+    registerServerSession(db, id);
+    if (!poller && tracker?.enabled) {
+      poller = setInterval(() => {
+        try {
+          trackEdits();
+          keepSummary();
+        } catch {
+          /* the database may be closed */
+        }
+      }, opts.pollMs ?? POLL_MS);
+      poller.unref();
+    }
+  };
+  const ensureOwnSession = () => {
+    if (hooks || (ownSession && getSession(db, ownSession)?.status === 'active')) return;
+    // Sessions of servers that were killed without shutting down (Copilot CLI) are closed first.
+    closeOrphanedSessions(db, project.id, (id) => autoSummary(db, project, id));
+    adopt(startSession(db, project.id, { agent: clientName() || 'mcp' }).id);
   };
   const trackEdits = () => {
     if (!tracker?.enabled || !ownSession) return;
@@ -118,23 +153,33 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         `Changed in the working tree while ${agent} was connected (detected by the Synapse server, so it may include edits made outside the agent).`);
     }
   };
-  /** Rolling checkpoint of the server's own session: what a compaction would lose. Also keeps the session summary current. */
+  /** Keep the session summary current, so a server killed without shutting down still leaves one. */
+  const keepSummary = () => {
+    if (!ownSession) return;
+    const summary = autoSummary(db, project, ownSession);
+    if (!summary || summary === summaryKept) return;
+    db.prepare('UPDATE sessions SET summary = ? WHERE id = ?').run(summary, ownSession);
+    summaryKept = summary;
+  };
+  /** Rolling checkpoint of the server's own session: what a compaction would lose. */
   const writeCheckpoint = (force = false) => {
     if (!ownSession) return;
+    keepSummary();
     checkpoint.calls++;
     const due = force || checkpoint.calls >= CHECKPOINT_EVERY_CALLS || Date.now() - checkpoint.at >= CHECKPOINT_EVERY_MS;
     if (!due) return;
     const summary = autoSummary(db, project, ownSession);
     if (!summary || summary === checkpoint.summary) return;
     addCheckpoint(db, project.id, ownSession, { summary });
-    db.prepare('UPDATE sessions SET summary = ? WHERE id = ?').run(summary, ownSession);
     checkpoint = { calls: 0, at: Date.now(), summary };
   };
   const endOwnSession = () => {
     trackEdits();
     const id = ownSession;
     ownSession = undefined;
-    if (!id || getSession(db, id)?.status !== 'active') return;
+    if (!id) return;
+    releaseServerSession(db, id);
+    if (getSession(db, id)?.status !== 'active') return;
     refreshSessionHashes(db, id, project.rootPath);
     endSession(db, id, autoSummary(db, project, id));
   };
@@ -164,6 +209,8 @@ export function createServer(opts: ServerOptions = {}): McpServer {
   toolNameRegistry.set(server, names);
   const previousOnClose = server.server.onclose;
   server.server.onclose = () => {
+    if (poller) clearInterval(poller);
+    poller = undefined;
     try {
       endOwnSession();
     } catch {
@@ -353,11 +400,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         if (!hooks) tracker = new WorktreeTracker(project.rootPath);
       }
       const s = startSession(db, project.id, { agent: agent ?? (clientName() || undefined) });
-      if (!hooks) {
-        ownSession = s.id;
-        sessionCalls = 0;
-        checkpoint = { calls: 0, at: Date.now(), summary: '' };
-      }
+      if (!hooks) adopt(s.id);
       const prev = recentSessions(db, project.id, 3).filter((p) => p.id !== s.id);
       return text(
         [`Session ${s.id} started for ${project.id}.`, prev.length ? '\nPrevious sessions:' : '\nNo previous session summaries.',
@@ -378,7 +421,10 @@ export function createServer(opts: ServerOptions = {}): McpServer {
       const s = own ?? activeSession(db, project.id) ?? startSession(db, project.id);
       refreshSessionHashes(db, s.id, project.rootPath);
       endSession(db, s.id, summary);
-      if (s.id === ownSession) ownSession = undefined;
+      if (s.id === ownSession) {
+        releaseServerSession(db, s.id);
+        ownSession = undefined;
+      }
       return text(`Session ${s.id} closed with handoff summary.`);
     },
   );

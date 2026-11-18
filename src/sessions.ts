@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { DB } from './db.js';
+import { setMeta, type DB } from './db.js';
 import { redactSecrets } from './secrets.js';
 import type { Checkpoint, Session } from './types.js';
 
@@ -111,4 +111,50 @@ export function listCheckpoints(db: DB, projectId: string, opts: { sessionId?: s
 export function checkpointText(c: Checkpoint): string {
   if (c.summary && c.agentSummary) return `${c.summary} | Agent summary: ${c.agentSummary}`;
   return c.summary ?? c.agentSummary ?? '';
+}
+
+// ── Sessions run by an MCP server (agents without hooks) ─────────────────
+// Some clients stop their MCP servers with SIGKILL (Copilot CLI does), so the server's own shutdown never runs.
+// Each server records its process id per session; the next server for the project closes sessions whose process is gone.
+
+const SERVER_SESSION = 'server-session:';
+
+export function registerServerSession(db: DB, sessionId: string, pid = process.pid): void {
+  setMeta(db, SERVER_SESSION + sessionId, String(pid));
+}
+
+export function releaseServerSession(db: DB, sessionId: string): void {
+  db.prepare('DELETE FROM meta WHERE key = ?').run(SERVER_SESSION + sessionId);
+}
+
+export function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM'; // alive, owned by another user
+  }
+}
+
+/**
+ * Close the project's server-run sessions whose server process no longer exists, with `summarize(id)` as the
+ * summary (falling back to the summary the server kept current). Returns the ids closed.
+ */
+export function closeOrphanedSessions(
+  db: DB, projectId: string, summarize: (id: string) => string | undefined, alive: (pid: number) => boolean = processAlive,
+): string[] {
+  const rows = db.prepare('SELECT key, value FROM meta WHERE key LIKE ?').all(`${SERVER_SESSION}%`) as { key: string; value: string }[];
+  const closed: string[] = [];
+  for (const { key, value } of rows) {
+    const id = key.slice(SERVER_SESSION.length);
+    const s = getSession(db, id);
+    if (s && s.projectId !== projectId) continue; // left for a server of that project
+    if (s?.status === 'active' && alive(Number(value))) continue;
+    if (s?.status === 'active') {
+      endSession(db, id, summarize(id));
+      closed.push(id);
+    }
+    releaseServerSession(db, id);
+  }
+  return closed;
 }
