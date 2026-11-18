@@ -27,6 +27,14 @@ describe('MCP server', () => {
     expect(full).toContain('read_graph');
   });
 
+  it('marks only the everyday tools to load at session start in Claude Code (anthropic/alwaysLoad)', async () => {
+    const tools = (await (await connect('full')).client.listTools()).tools;
+    const eager = tools.filter((t) => (t._meta as Record<string, unknown> | undefined)?.['anthropic/alwaysLoad'] === true).map((t) => t.name).sort();
+    expect(eager).toEqual(['synapse_detail', 'synapse_feedback', 'synapse_project_context', 'synapse_search', 'synapse_session_end', 'synapse_store', 'synapse_store_reasoning']);
+    // The approval gate keeps its own marker and stays deferred.
+    expect(tools.find((t) => t.name === 'synapse_lt_approve')!._meta).toEqual({ 'anthropic/requiresUserInteraction': true });
+  });
+
   it('store -> search -> detail -> resolve flow', async () => {
     const { call } = await connect();
     expect((await call('synapse_search', { query: 'anything' })).text).toContain('fresh project');

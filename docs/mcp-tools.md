@@ -4,6 +4,8 @@ Start the server with `synapse serve` (stdio). It binds to the project of its wo
 
 Lite mode (the default) exposes 14 tools. Full mode (`--mode full` or `SYNAPSE_MODE=full`) adds 10 more.
 
+**Loaded at session start in Claude Code.** Claude Code defers MCP tools behind tool search: the model sees only their names until it loads them, which makes it less likely to use memory unprompted. The everyday tools (`synapse_project_context`, `synapse_search`, `synapse_detail`, `synapse_store`, `synapse_store_reasoning`, `synapse_feedback` and `synapse_session_end`) are marked `_meta["anthropic/alwaysLoad"]`, so they're ready from the first turn. The rest stay deferred to save context. Other agents ignore the marker.
+
 ## Recommended agent workflow
 
 1. **Starting non-trivial work:** call `synapse_project_context` with the user's actual task, and read its "Start here" files first.

@@ -66,6 +66,15 @@ export function suggestTopicKey(type: string, title: string, entityName?: string
 /** Tools that must always ask the user (Claude Code honors the marker; other agents must be configured not to pre-approve them). */
 export const GATED_TOOLS = ['synapse_lt_approve'];
 const REQUIRES_USER = 'anthropic/requiresUserInteraction';
+/**
+ * Claude Code defers MCP tools behind tool search: the model sees only their names until it loads them, which makes
+ * an agent less likely to reach for memory unprompted. The everyday tools are marked to load at session start; the
+ * rest stay deferred to save context. Other agents ignore the marker.
+ */
+const ALWAYS_LOAD = 'anthropic/alwaysLoad';
+export const CORE_TOOLS = [
+  'synapse_project_context', 'synapse_search', 'synapse_detail', 'synapse_store', 'synapse_store_reasoning', 'synapse_feedback', 'synapse_session_end',
+];
 const toolNameRegistry = new WeakMap<McpServer, string[]>();
 
 /** Every tool name the server registers in a mode (full = all). */
@@ -190,6 +199,10 @@ export function createServer(opts: ServerOptions = {}): McpServer {
   server.registerTool = ((...args: unknown[]) => {
     const name = args[0] as string;
     names.push(name);
+    if (CORE_TOOLS.includes(name) && args[1] && typeof args[1] === 'object') {
+      const config = args[1] as { _meta?: Record<string, unknown> };
+      config._meta = { ...config._meta, [ALWAYS_LOAD]: true };
+    }
     const handler = args[args.length - 1] as (...a: unknown[]) => Promise<Text>;
     args[args.length - 1] = async (...a: unknown[]) => {
       if (name !== 'synapse_session_start') {
