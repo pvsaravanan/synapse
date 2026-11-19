@@ -47,7 +47,24 @@ describe('synapse ui server', () => {
     expect(base).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     const res = await fetch(base + '/');
     expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
-    expect(await res.text()).toContain('<title>Synapse</title>');
+    const page = await res.text();
+    expect(page).toContain('<title>Synapse</title>');
+    expect(page).toContain('src="data:image/png;base64,'); // the logo is inlined
+    expect(page).toContain('url("data:font/woff2;base64,'); // and so is the Plus Jakarta Sans font
+    expect(res.headers.get('content-security-policy')).toContain('font-src data:');
+    expect(page).not.toMatch(/(src|href)="https?:/); // and nothing loads from outside
+  });
+
+  it('counts memories per type ignoring the type filter, and filters curated vs candidate', async () => {
+    const all = (await api('/api/memories')).body;
+    expect(all.byType).toEqual({ gotcha: 1, 'what-changed': 1 });
+    const gotchas = (await api('/api/memories?type=gotcha')).body;
+    expect(gotchas.items.map((m: any) => m.title)).toEqual(['Rate limit is per API key']);
+    expect(gotchas.total).toBe(1);
+    expect(gotchas.byType).toEqual({ gotcha: 1, 'what-changed': 1 });
+    const curated = (await api('/api/memories?admission=qualified')).body;
+    expect(curated.items.map((m: any) => m.title)).toEqual(['Rate limit is per API key']);
+    expect(curated.byType).toEqual({ gotcha: 1 });
   });
 
   it('rejects API calls without the token, and requests addressed to a non-local host', async () => {
@@ -108,5 +125,6 @@ describe('synapse ui server', () => {
     const sessions = (await api('/api/sessions')).body;
     expect(sessions[0]).toMatchObject({ id: 's1', agent: 'claude-code', summary: 'Goal: tune limits', memories: 1 });
     expect((await api('/api/session?id=s1')).body.items.map((m: any) => m.title)).toEqual(['Edited src/limit.ts']);
+    expect((await api('/api/stats')).body.sessions).toBe(1);
   });
 });

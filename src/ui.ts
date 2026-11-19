@@ -91,7 +91,8 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
       const p = projectParam(u);
       const stats = projectStats(db, p);
       const candidates = Number((db.prepare("SELECT COUNT(*) AS n FROM observations WHERE projectId = ? AND status = 'active' AND admissionState = 'candidate'").get(p) as { n: number }).n);
-      return { ...stats, candidates, stale: p === project.id ? staleMemories(db, project, 500).length : null };
+      const sessions = Number((db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE projectId = ?').get(p) as { n: number }).n);
+      return { ...stats, candidates, sessions, stale: p === project.id ? staleMemories(db, project, 500).length : null };
     },
     '/api/memories': (u) => {
       const p = projectParam(u);
@@ -102,19 +103,23 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
       const source = u.searchParams.get('source');
       const admission = u.searchParams.get('admission');
       const limit = Math.min(Number(u.searchParams.get('limit')) || 100, 300);
+      // Fetch without the type filter so the page can show a count per type, then apply it.
       let obs = q
-        ? search(db, { query: q, projectId: p, status, type: types as Observation['type'][] | undefined, limit: 300 }).map((h) => h.observation)
-        : listObservations(db, { projectId: p, status, type: types, limit: 1000 });
+        ? search(db, { query: q, projectId: p, status, limit: 300 }).map((h) => h.observation)
+        : listObservations(db, { projectId: p, status, limit: 1000 });
       if (source && (SOURCES as readonly string[]).includes(source)) obs = obs.filter((o) => o.source === source);
       if (admission === 'candidate' || admission === 'qualified') obs = obs.filter((o) => o.admissionState === admission);
       if (u.searchParams.get('changed') === '1') {
         const stale = new Set(p === project.id ? staleMemories(db, project, 1000).map((s) => s.observation.id) : []);
         obs = obs.filter((o) => stale.has(o.id));
       }
+      const byType: Record<string, number> = {};
+      for (const o of obs) byType[o.type] = (byType[o.type] ?? 0) + 1;
+      if (types) obs = obs.filter((o) => types.includes(o.type));
       const total = obs.length;
       obs = obs.slice(0, limit);
       const changes = changesOf(p, obs);
-      return { total, items: obs.map((o) => summary(o, changes.get(o.id))) };
+      return { total, byType, items: obs.map((o) => summary(o, changes.get(o.id))) };
     },
     '/api/memory': (u) => {
       const o = getObservation(db, int(u.searchParams.get('id'), 'id'));
@@ -190,7 +195,7 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
       'x-content-type-options': 'nosniff',
       'referrer-policy': 'no-referrer',
       ...(type.startsWith('text/html')
-        ? { 'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" }
+        ? { 'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" }
         : {}),
     });
     res.end(typeof data === 'string' ? data : JSON.stringify(data));

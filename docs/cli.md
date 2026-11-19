@@ -101,11 +101,13 @@ synapse ui [--port N] [--open]
 
 Starts a local web page for the project in the current directory (any project can be picked from the header):
 
-- **Memories:** search and filter by type, status and source; open a memory to see its narrative, facts, files, history (what it replaced or was replaced by) and feedback.
+- **Memories:** curated memories, grouped by day; tick **Include candidates** to mix in auto-captured ones. Search (matches are highlighted), filter by status and source, and narrow to one type with the chips, which show a count per type. Open a memory to see its narrative (Markdown is rendered), facts, files, history (what it replaced or was replaced by) and feedback.
 - **Changed since:** memories whose files changed after they were stored, with **Still true** (verified) and **Outdated** buttons. Only the project `synapse ui` was started in can be checked, since only its folder is known.
-- **Candidates:** auto-captured records, with **Keep** to qualify the useful ones.
+- **Candidates:** auto-captured records, with **Keep** to qualify the useful ones. Tick several (or the box in the bar above the list, for all shown) to keep or archive them at once. Command records show as **Ran** or **Failed** plus the command, without the leading `cd` into the project.
 - **Sessions:** each session's agent, summary, checkpoints and records.
 - **Long-term:** proposals to approve or reject, and approved items to retire, each with a required reason (recorded as "via synapse ui").
 
-Every memory can be resolved, archived or reopened. The server listens on `127.0.0.1` only, answers only requests addressed to a local host name, and needs the access token in the printed URL for every API call, so other websites can't read or change your memory. The token changes each run. Stop it with Ctrl+C.
+The top of the page shows curated, candidate, changed-since and session counts; click one to open that view. Every memory can be resolved, archived or reopened. Keyboard: `/` focuses search, `j`/`k` (or the arrow keys) move through the list, `x` picks the open candidate, `Esc` closes the memory or leaves the search box, and `?` (or the round button at the bottom left) lists these keys.
+
+The server listens on `127.0.0.1` only, answers only requests addressed to a local host name, and needs the access token in the printed URL for every API call, so other websites can't read or change your memory. The token changes each run. Stop it with Ctrl+C.
 
