@@ -2,9 +2,9 @@
   <img src="docs/media/synapse-logo.png" alt="Synapse logo" width="120">
 </p>
 
-# Synapse
+<h1 align="center">Synapse</h1>
 
-Local-first, project-aware memory for AI coding agents, served over MCP.
+<p align="center">Local-first, project-aware memory for AI coding agents, served over MCP.</p>
 
 Synapse stores what agents learn about a project: decisions, gotchas, fixes, reasoning, session handoffs and git history. Everything goes into one SQLite file on your machine. Any later session or agent can pick it up through cheap, token-budgeted retrieval.
 
