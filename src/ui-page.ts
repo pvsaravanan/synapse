@@ -186,6 +186,25 @@ textarea.mono { font-family: var(--mono); font-size: 12.5px; }
 .mergelist .row { grid-template-columns: auto minmax(0, 1fr); }
 .mergelist .row .meta { grid-column: 2; }
 .dactions .spacer { flex: 1; }
+/* Diffs of a flagged memory's files since it was stored */
+.fdiff { border: 1.5px solid var(--line); border-radius: 14px; margin-bottom: 10px; overflow: hidden; background: var(--panel); }
+.fdiff > summary { cursor: pointer; padding: 9px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; list-style: none; }
+.fdiff > summary::-webkit-details-marker { display: none; }
+.fdiff > summary::before { content: ""; width: 7px; height: 7px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); transition: transform .15s; flex: none; }
+.fdiff[open] > summary::before { transform: rotate(45deg); }
+.fdiff > summary .cmd { font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+.fdiff .counts { font-family: var(--mono); font-size: 12px; }
+.fdiff .counts .a { color: var(--ok); } .fdiff .counts .r { color: var(--bad); }
+.fdiff .since { flex-basis: 100%; font-size: 12px; color: var(--muted); padding-left: 17px; overflow-wrap: anywhere; }
+.fdiff .since .mono { font-size: 11.5px; }
+.fdiff .small { margin: 0; padding: 10px 14px 12px; }
+.diff { margin: 0; border-top: 1px solid var(--line); background: var(--soft); max-height: 420px; overflow: auto; padding: 6px 0; font-family: var(--mono); font-size: 12px; line-height: 1.55; scrollbar-width: thin; }
+.diff .dl { display: block; padding: 0 12px; white-space: pre; min-width: max-content; }
+.diff .add { background: var(--ok-bg); color: #1d5434; }
+.diff .del { background: var(--bad-bg); color: #8a2817; }
+.diff .hunk { color: var(--muted); background: var(--pill); margin: 4px 0; }
+.diff .meta { color: var(--faint); font-style: italic; }
+@media (prefers-reduced-motion: reduce) { .fdiff > summary::before { transition: none; } }
 .md code { background: var(--soft); border-radius: 5px; padding: 1px 5px; }
 .md pre { background: var(--soft); border-radius: 12px; padding: 12px 14px; overflow-x: auto; white-space: pre; }
 .md pre code { background: none; padding: 0; }
@@ -1235,8 +1254,9 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
       h('div', { class: 'dhead' }, h('span', { class: 'dot t-' + m.type }), h('span', { class: 'type t-' + m.type }, m.type), copyId),
       h('h2', {}, prettyTitle(m.title)),
       h('div', { class: 'chips dflags' }, ...flags),
-      m.changes.length ? h('p', {}, h('span', { class: 'flag warn' }, 'Changed since stored: ' + m.changes.map((c) => c.file + ' (' + c.change + ')').join(', ')), ' ', h('span', { class: 'small' }, 'Check the current code, then mark it.')) : null,
+      m.changes.length ? h('p', {}, h('span', { class: 'flag warn' }, 'Changed since stored: ' + m.changes.map((c) => c.file + ' (' + c.change + ')').join(', ')), ' ', h('span', { class: 'small' }, 'Read what changed below, then mark it still true or outdated.')) : null,
       h('div', { class: 'md' }, narrative(m.narrative)),
+      m.changes.length ? h('div', { class: 'section', id: 'diffs' }, h('h3', {}, 'What changed since it was stored'), h('p', { class: 'small' }, 'Loading the diff…')) : null,
       list('Facts', m.facts),
       m.files && m.files.length ? h('div', { class: 'section' }, h('h3', {}, 'Files'), h('ul', { class: 'files' }, ...m.files.map((f) => h('li', {}, f)))) : null,
       m.concepts && m.concepts.length ? h('div', { class: 'section' }, h('h3', {}, 'Concepts'), h('div', { class: 'chips' }, ...m.concepts.map((c) => h('span', { class: 'flag' }, c)))) : null,
@@ -1245,7 +1265,30 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
       list('Feedback', m.feedback.map((f) => f.signal + ' · ' + when(f.createdAt) + (f.note ? ' · ' + f.note : ''))),
       h('div', { class: 'section' }, h('h3', {}, 'About'), h('dl', { class: 'kv' }, ...kv.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))));
     fill($('dactions'), ...actions.filter(Boolean));
+    if (m.changes.length) loadDiffs(m);
     d.scrollTop = 0;
+  }
+
+  // The git diff of each changed file, from the version the memory was checked against to the working tree.
+  async function loadDiffs(m) {
+    let res;
+    try { res = await api('/api/memory/diff', { id: m.id }); } catch (e) { res = { files: [], note: e.message }; }
+    const box = $('diffs');
+    if (!box || !S.current || S.current.id !== m.id) return;
+    const line = (l) => h('span', { class: 'dl ' + (l.startsWith('@@') ? 'hunk' : l[0] === '+' ? 'add' : l[0] === '-' ? 'del' : l[0] === '\\' ? 'meta' : 'ctx') }, l || ' ');
+    const file = (f, i) => {
+      const b = f.baseline;
+      const since = b ? h('span', { class: 'since' }, (b.exact ? 'Since ' : 'Since about ') + 'the version in ', h('span', { class: 'mono' }, b.commit.slice(0, 7)),
+        ' · ' + when(b.date) + (b.subject ? ' · ' + b.subject : ''),
+        b.exact ? '' : '. Approximate: the memory was stored while this file had uncommitted changes, so this diff starts at the last commit before then.') : null;
+      return h('details', { class: 'fdiff', open: i === 0 ? true : null },
+        h('summary', {}, h('span', { class: 'cmd' }, f.file), h('span', { class: 'flag warn' }, f.change),
+          f.added || f.removed ? h('span', { class: 'counts' }, h('span', { class: 'a' }, '+' + f.added), ' ', h('span', { class: 'r' }, '−' + f.removed)) : null, since),
+        f.diff ? h('pre', { class: 'diff' }, ...f.diff.split('\n').map(line), f.truncated ? h('span', { class: 'dl meta' }, '… diff cut at 400 lines') : null) : null,
+        f.note ? h('p', { class: 'small' }, f.note) : !f.diff ? h('p', { class: 'small' }, 'No line changes (only whitespace, mode or line endings).') : null);
+    };
+    fill(box, h('h3', {}, 'What changed since it was stored'),
+      res.files.length ? res.files.map(file) : h('p', { class: 'small' }, res.note || 'The files match again; nothing to show.'));
   }
 
   // Edit a memory in place: title, type, area, narrative, facts, files and concepts. A candidate can be kept as it is saved.

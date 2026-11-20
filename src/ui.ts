@@ -7,6 +7,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { VERSION } from './config.js';
 import type { DB } from './db.js';
+import { memoryDiffs } from './diff.js';
 import { changesFor, staleMemories } from './freshness.js';
 import { listLongTerm, reviewLongTerm, LT_STATES } from './longterm.js';
 import { search } from './search.js';
@@ -176,6 +177,14 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
       const graph = buildMemoryGraph(shown, { files: u.searchParams.get('files') !== '0', concepts: u.searchParams.get('concepts') === '1' });
       const changes = changesOf(p, shown);
       return { ...graph, truncated: obs.length > limit, memories: shown.map((o) => summary(o, changes.get(o.id))) };
+    },
+    '/api/memory/diff': (u) => {
+      const o = getObservation(db, int(u.searchParams.get('id'), 'id'));
+      if (!o) throw new HttpError(404, 'Memory not found');
+      // Only the project synapse ui was started in has a known folder to diff.
+      if (o.projectId !== project.id) return { files: [], note: `Diffs are only available for ${project.id}, the project synapse ui was started in.` };
+      const verified = db.prepare("SELECT MAX(createdAt) AS at FROM feedback WHERE observationId = ? AND signal = 'verified'").get(o.id) as { at: string | null };
+      return { files: memoryDiffs(project.rootPath, o, verified.at ?? undefined) };
     },
     '/api/memory/similar': (u) => similarObservations(db, int(u.searchParams.get('id'), 'id')).map((x) => ({ ...summary(x.observation), score: Math.round(x.score * 100) / 100 })),
     '/api/longterm': (u) => {

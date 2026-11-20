@@ -185,4 +185,14 @@ describe('synapse ui server', () => {
     const other = listObservations(db, { projectId: 'other/repo', limit: 5 })[0];
     expect((await api('/api/memory/merge', { into: keep.id, from: [other.id] })).body.error).toMatch(/another project/);
   });
+
+  it('serves the diff of a flagged memory\'s files, only for the project it was started in', async () => {
+    const flagged = listAll().find((o) => o.title === 'Rate limit is per API key')!;
+    writeFileSync(path.join(dir, 'src/limit.ts'), 'export const LIMIT = 20;\n');
+    const res = (await api(`/api/memory/diff?id=${flagged.id}`)).body;
+    expect(res.files).toEqual([expect.objectContaining({ file: 'src/limit.ts', change: 'modified', note: expect.stringMatching(/not a git repository/) })]);
+    const other = listObservations(db, { projectId: 'other/repo', limit: 5 })[0];
+    expect((await api(`/api/memory/diff?id=${other.id}`)).body).toEqual({ files: [], note: expect.stringMatching(/only available for/) });
+    expect((await api('/api/memory/diff?id=99999')).status).toBe(404);
+  });
 });
