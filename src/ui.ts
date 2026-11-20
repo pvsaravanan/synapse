@@ -21,6 +21,7 @@ import {
   setStatus,
 } from './store.js';
 import { OBSERVATION_TYPES, type Observation, type ObservationStatus, type ProjectInfo } from './types.js';
+import { buildMemoryGraph } from './ui-graph.js';
 import { UI_PAGE } from './ui-page.js';
 
 export interface UiOptions {
@@ -150,6 +151,17 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
         .map((r) => getObservation(db, Number(r.id))!)
         .map((o) => summary(o));
       return { items };
+    },
+    '/api/graph': (u) => {
+      const p = projectParam(u);
+      const status = (STATUSES as readonly string[]).includes(u.searchParams.get('status') ?? '') ? (u.searchParams.get('status') as ObservationStatus | 'all') : 'active';
+      const limit = Math.min(Number(u.searchParams.get('limit')) || 400, 1000);
+      // One extra row tells the page the map was cut to the most recent memories.
+      const obs = listObservations(db, { projectId: p, status, includeCandidates: u.searchParams.get('candidates') === '1', limit: limit + 1 });
+      const shown = obs.slice(0, limit);
+      const graph = buildMemoryGraph(shown, { files: u.searchParams.get('files') !== '0', concepts: u.searchParams.get('concepts') === '1' });
+      const changes = changesOf(p, shown);
+      return { ...graph, truncated: obs.length > limit, memories: shown.map((o) => summary(o, changes.get(o.id))) };
     },
     '/api/longterm': (u) => {
       const state = u.searchParams.get('state') ?? 'proposed';

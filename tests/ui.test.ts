@@ -127,4 +127,25 @@ describe('synapse ui server', () => {
     expect((await api('/api/session?id=s1')).body.items.map((m: any) => m.title)).toEqual(['Edited src/limit.ts']);
     expect((await api('/api/stats')).body.sessions).toBe(1);
   });
+
+  it('maps curated memories to their components and files, with candidates, concepts and limits on request', async () => {
+    storeObservation(db, { projectId: project().id, entityName: 'billing', type: 'decision', title: 'Bill per key', narrative: 'n', filesModified: ['./src/limit.ts'], relatedEntities: ['api'], concepts: ['quota', 'pinned'] });
+    const ids = (g: any) => g.nodes.map((n: any) => n.id).sort();
+    const g = (await api('/api/graph')).body;
+    expect(ids(g)).toEqual(['e:api', 'e:billing', 'f:src/limit.ts', expect.stringMatching(/^m:/), expect.stringMatching(/^m:/)]);
+    expect(g.nodes.find((n: any) => n.id === 'f:src/limit.ts').degree).toBe(2); // shared by both memories, './' dropped
+    expect(g.links).toContainEqual(expect.objectContaining({ target: 'e:api', kind: 'related' }));
+    expect(g.memories.map((m: any) => m.title).sort()).toEqual(['Bill per key', 'Rate limit is per API key']);
+    expect(g.memories.find((m: any) => m.title === 'Rate limit is per API key').changes).toEqual([]);
+    expect(g.truncated).toBe(false);
+
+    const withCandidates = (await api('/api/graph?candidates=1')).body;
+    expect(withCandidates.memories).toHaveLength(3);
+    const concepts = (await api('/api/graph?concepts=1&files=0')).body;
+    expect(ids(concepts).filter((id: string) => !id.startsWith('m:'))).toEqual(['c:quota', 'e:api', 'e:billing']); // no files, no "pinned"
+    const limited = (await api('/api/graph?limit=1')).body;
+    expect(limited).toMatchObject({ truncated: true });
+    expect(limited.memories).toHaveLength(1);
+    expect(ids((await api('/api/graph?project=other/repo')).body)).toEqual(['e:x', expect.stringMatching(/^m:/)]);
+  });
 });
