@@ -132,7 +132,8 @@ function patchEdits(base: HookInput, toolInput: unknown): HookInput[] {
 
 function normalizeCodex(raw: Raw): HookInput[] {
   const input = { ...(raw as HookInput), agent: 'codex' as const };
-  if (input.hook_event_name === 'PostToolUse' && input.tool_name === 'apply_patch') return patchEdits(input, raw.tool_input);
+  // PreToolUse too: a patch's files get their memory notes before it is applied.
+  if ((input.hook_event_name === 'PostToolUse' || input.hook_event_name === 'PreToolUse') && input.tool_name === 'apply_patch') return patchEdits(input, raw.tool_input);
   return [input];
 }
 
@@ -290,6 +291,11 @@ function normalizeGemini(raw: Raw): HookInput[] {
       return fileEdit(base, 'Edit', input);
     case 'write_file':
       return fileEdit(base, 'Write', input);
+    case 'read_file': {
+      // Only for the file's memory notes; reads are never captured.
+      const file = pick(input, ['file_path', 'absolute_path', 'path']);
+      return file ? [{ ...base, tool_name: 'Read', tool_input: { file_path: file } }] : [];
+    }
     default:
       return [];
   }
@@ -354,6 +360,15 @@ export function formatHookResult(agent: AgentId, rawEvent: string, result: { con
   if (agent === 'antigravity') {
     if (rawEvent === 'Stop' && result.continueWith) return JSON.stringify({ decision: 'continue', reason: result.continueWith });
     return rawEvent === 'SessionStart' && result.context ? JSON.stringify({ injectSteps: [{ systemMessage: result.context }] }) : undefined;
+  }
+  // File notes ride on tool events as added context. Claude Code and Codex add it to the model's context (Codex's
+  // PreToolUse before the tool runs); neither treats it as a permission decision, so the normal approval flow is
+  // unchanged. Gemini CLI appends AfterTool context to the tool result.
+  if (result.context && (rawEvent === 'PostToolUse' || rawEvent === 'PreToolUse') && (agent === 'claude' || agent === 'codex')) {
+    return JSON.stringify({ hookSpecificOutput: { hookEventName: rawEvent, additionalContext: result.context } });
+  }
+  if (result.context && agent === 'gemini' && rawEvent === 'AfterTool') {
+    return JSON.stringify({ hookSpecificOutput: { hookEventName: 'AfterTool', additionalContext: result.context } });
   }
   // Claude Code and Codex: a blocked Stop keeps the agent going with the reason as its next instruction.
   if (rawEvent === 'Stop' && result.continueWith && (agent === 'claude' || agent === 'codex')) {

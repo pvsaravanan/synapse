@@ -36,4 +36,15 @@ export function hooksInstalled(): boolean {
   return /^(1|true|yes|on)$/i.test(process.env.SYNAPSE_HOOKS ?? '');
 }
 
+/**
+ * SYNAPSE_CANDIDATE_DAYS: auto-captured candidates nobody kept, read or rated are archived after this many days
+ * (default 14; 0 turns it off). Archived, not deleted: they can be reopened.
+ */
+export function candidateDays(): number {
+  const v = process.env.SYNAPSE_CANDIDATE_DAYS;
+  if (v === undefined || v.trim() === '') return 14;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : 14;
+}
+
 export const VERSION = '0.1.0';

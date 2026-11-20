@@ -17,14 +17,15 @@ Rebuild after changing `src/` when testing hooks or the MCP server live, because
 ## Layout
 
 - `src/server.ts`: MCP tools (lite and full modes); without hooks it also runs the session, using `src/worktree.ts` to detect edits
-- `src/hooks.ts`, `src/agents.ts`: hook handling; each agent's payloads are normalized to one event model
+- `src/hooks.ts`, `src/agents.ts`: hook handling and capture rules; each agent's payloads are normalized to one event model
+- `src/file-notes.ts`: the memories about a file, shown to the agent when it reads or edits it
 - `src/setup.ts`: `synapse setup <agent>` (hooks, MCP registration, CLAUDE.md / AGENTS.md instructions); `src/doctor.ts` checks, repairs and uninstalls it
 - `src/store.ts`, `src/db.ts`: observations, upserts and duplicate merging, schema and migrations
 - `src/context.ts`: the task-lensed project brief
 - `src/search.ts`, `src/retention.ts`: FTS ranking and relevance decay
 - `src/longterm.ts`, `src/sessions.ts`, `src/freshness.ts`: reviewed long-term memory, sessions and checkpoints, file freshness
 - `src/ui.ts`, `src/ui-page.ts`: `synapse ui`, the local web page (server plus one self-contained HTML page)
-- `src/consolidate.ts`, `src/ignore.ts`: merging auto-captured records when a session ends; `.synapseignore`
+- `src/consolidate.ts`, `src/ignore.ts`: merging and archiving auto-captured records when a session ends; `.synapseignore`
 - `tests/`: one file per area; tests use an in-memory database and temp directories
 
 ## Conventions

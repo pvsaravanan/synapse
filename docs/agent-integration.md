@@ -81,6 +81,7 @@ Each agent's events map onto the same behaviour:
 |---|---|---|---|---|---|---|---|
 | Inject a project brief (≤700 tokens) at session start | `SessionStart` | `sessionStart` → `additional_context` | `SessionStart` → `additionalContext` | `SessionStart` → `additionalContext` | `sessionStart` → `additionalContext` | `SessionStart` → `additionalContext` | `SessionStart` → `injectSteps` |
 | Record the session's first substantial prompt as its goal | `UserPromptSubmit` | `beforeSubmitPrompt` | `UserPromptSubmit` | `UserPromptSubmit` | `userPromptSubmitted` | `BeforeAgent` | `PreInvocation` (`lastUserInput`) |
+| [Note the memories about a file](#file-notes) the agent reads or edits | `PostToolUse` (`Read`, edits, files a Bash command names) → `additionalContext` | Not available | `PreToolUse` (`apply_patch` per file, shell commands) → `additionalContext`, before the tool runs | Not available | Not available | `AfterTool` (`read_file`, edits) → `additionalContext` | Not available |
 | Capture file edits | `PostToolUse` (Edit/Write/MultiEdit) | `afterFileEdit` | `PostToolUse` (`apply_patch`, split per file) | `PostToolUse` (`edit`, `write`, `notebook_edit`, `apply_patch`) | `postToolUse` (`edit`, `create`, `apply_patch`) | `AfterTool` (`replace`, `write_file`) | `PostToolUse` (`write_to_file`, `replace_file_content`, `multi_replace_file_content`) |
 | Capture significant or failing commands | `PostToolUse` (Bash) | `afterShellExecution` | `PostToolUse` (Bash) | `PostToolUse` (`exec`) | `postToolUse`, `postToolUseFailure` (`bash`) | `AfterTool` (`run_shell_command`) | `PostToolUse` (`run_command`; failure from `error`, no output) |
 | Add a compaction checkpoint and refresh the session summary | `PreCompact` | `preCompact` | `PreCompact` | `PostCompaction` (falls back to Devin's own summary) | `preCompact` | `PreCompress` | Not available |
@@ -113,7 +114,7 @@ The PascalCase events (snake_case payloads with Claude tool names) are understoo
 
 **Antigravity is implemented from its [hooks reference](https://antigravity.google/docs/hooks), not verified against a live run.** Its payloads carry no event name, so setup passes `--event`; the project comes from `workspacePaths[0]`, and the brief goes out as an `injectSteps` system message. `PostToolUse` runs for every tool (`matcher: "*"`) and keeps only the file tools and `run_command`.
 
-**Gemini CLI is implemented from its hook reference, not verified against a live run.** `AfterTool` is limited to the edit and shell tools by its matcher. A shell command's exit code is read from the `Exit Code: N` line of its result.
+**Gemini CLI is implemented from its hook reference, not verified against a live run.** `AfterTool` is limited to the edit, shell and `read_file` tools by its matcher (`read_file` only for [file notes](#file-notes); reads aren't captured). A shell command's exit code is read from the `Exit Code: N` line of its result.
 
 ### Capture rules
 
@@ -122,6 +123,8 @@ The PascalCase events (snake_case payloads with Claude tool names) are understoo
   - build, test, lint, install, deploy or migration commands → `discovery`
   - commands that **failed** → `gotcha`. A failure is a non-zero exit code when the agent reports one (Codex does, and Gemini's `Exit Code: N`), `success: false` or `Exit code: N` (Devin), a non-`success` result or `completed with exit code N` (Copilot), or otherwise a failure-shaped line: `Error:`, `error[…]:`, `file:line: error:`, `file(l,c): error`, `npm ERR!`, `N failed`, a traceback, `command not found`, and so on. Output that merely contains the word "error", such as a grep of source code, doesn't count.
   - trivial commands (`ls`, `cd`, `cat`, `git status`, …) are ignored, unless chained with real work, as in `cd app && npm test`.
+  - **read-only commands** (searches and file prints: `grep`, `rg`, `find`, `sed` without `-i`, `awk`, `jq`, `diff`, …, alone or chained with each other) are ignored even when they "fail", since `grep` exits 1 on no match and printed code can look like an error. They're kept only when the command itself broke: `command not found`, `No such file or directory`, `Permission denied`, an invalid option.
+  - "Significant" is judged on each command's **program words**, not its arguments: `npx vitest run tests/a.test.ts` is a test run, but `grep -n x tests/a.test.ts`, or a `python3 -` or `cat >> file` heredoc whose body mentions "test", is not. Chains split on `&&`, `||`, `;`, `|` and newlines outside quotes.
 - **Fixes** are detected: when a command passes after the same command failed earlier in the session, and files were edited in between, Synapse records a draft `problem-solution` (`Fixed: npm test`) with the failure output, the files changed and both commands, and resolves the failure record. Commands are matched on what they run, not their exact text: `npm test 2>&1 | tail -30` and `cd app && npm test` both count as `npm test`. A pass with no edits in between (a flaky test, an environment change) isn't a fix. When the agent stores its own `problem-solution` in that session, the drafts for the same files are resolved, since the agent's account of the cause replaces them.
 - **Never captured:** read-only tools, Synapse's own MCP tools, commands that run `synapse`, and output that is Synapse's own search results.
 
@@ -132,7 +135,24 @@ Everything captured is a down-ranked **candidate**:
 - It is never shown as a caution.
 - It decays four times faster than an explicit memory.
 
-Promote the useful ones with `synapse_qualify`.
+Promote the useful ones with `synapse_qualify`, or edit and keep them in [`synapse ui`](cli.md#synapse-ui). Candidates nobody keeps, reads or rates are archived after 14 days (`SYNAPSE_CANDIDATE_DAYS`; see [consolidation](concepts.md#consolidation)).
+
+### File notes
+
+The brief at session start can't know which files the task will touch, and agents rarely search before editing. So when the agent **reads or edits a project file**, or runs a shell command naming one (`sed -n 1,80p src/ui.ts`), the hooks add the memories about that file to its context:
+
+```
+Synapse memory about src/ui-page.ts:
+⚠ #126 gotcha: UI page is a String.raw template: no backticks or ${ in page JS
+• #141 how-it-works: synapse ui Graph view: hand-rolled force layout on canvas [changed since stored]
+Read one in full with synapse_detail before relying on it; check [changed since stored] ones against the current code.
+```
+
+- **Which memories:** active ones that name the file, reviewed only (stored by an agent or a person, or candidates someone kept; raw hook captures never), at most 3 per file and 3 files per tool call, gotchas first, then decisions, fixes and explanations. `[changed since stored]` marks memories whose files changed after they were stored.
+- **Once per file per session**, so a file read ten times is noted once. Shown memories count as read.
+- **Before the edit:** Claude Code must read a file before it can edit it, and the note rides on the read (`PostToolUse` `additionalContext`), so it arrives before the change. Codex gets it from `PreToolUse`, before `apply_patch` or the command runs; Gemini CLI on `read_file` (`AfterTool`). The context never carries a permission decision, so the normal approval flow is unchanged, and the hook still always exits 0.
+- **Agents without a channel:** Cursor, Copilot CLI, Devin CLI and Antigravity document no way for these hooks to add context, so they get no file notes. Re-run `synapse setup codex` / `synapse setup gemini` so existing installs get the `PreToolUse` hook and the `read_file` matcher (`synapse doctor agents --fix` does it too).
+- **Turn it off** with `SYNAPSE_FILE_NOTES=0` (`SYNAPSE_HOOK_INJECT=silent` turns it off as well).
 
 ### Store reminder
 
@@ -158,7 +178,8 @@ synapse hook [--agent claude|cursor|codex|devin|copilot|gemini] [--event E]
 
 ## Controlling injection
 
-| `SYNAPSE_HOOK_INJECT` | Session-start behaviour |
+| `SYNAPSE_HOOK_INJECT` | Session-start behaviour (`silent` also turns off file notes) |
+| `SYNAPSE_FILE_NOTES` | `0` turns off [file notes](#file-notes) |
 |---|---|
 | `full` (default) | Hint plus project brief |
 | `minimal` | One-line hint only |

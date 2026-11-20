@@ -22,12 +22,13 @@ Full documentation: [docs/](docs/README.md) — [getting started](docs/getting-s
 - **Git memory:** commits become typed, source-backed memories, with merge, version-bump and lockfile noise filtered out.
 - **Automatic hooks for Claude Code, Cursor, Codex, Devin CLI, GitHub Copilot CLI, Gemini CLI and Antigravity:**
   - inject a brief at session start
-  - capture edits and significant or failing commands as down-ranked *candidates*, merged per area when the session ends; `.synapseignore` (and built-in secret-file defaults) keeps files out
+  - when the agent reads or edits a file, show it the memories about that file ("⚠ #126 gotcha: …"), once per file per session
+  - capture edits and significant or failing commands as down-ranked *candidates* (searches and file prints are skipped), merged per area and per session when the session ends, and archived after 14 days if nobody keeps them; `.synapseignore` (and built-in secret-file defaults) keeps files out
   - keep a checkpoint at every context compaction, and lead the brief with it when the session resumes
   - detect fixes (a command that fails, then passes after edits) as draft memories, and remind the agent once per session to store what it learned
   - auto-summarize the session at end
 - **File freshness:** a memory whose files changed since it was stored is flagged `changed since: …` in search and briefs, until it's verified or resolved.
-- **Local web UI** (`synapse ui`): browse, search and curate memory, explore it as a node map of memories, components and files, check "changed since" flags, qualify candidates and review long-term proposals.
+- **Local web UI** (`synapse ui`): browse, search and curate memory, edit and merge memories, explore it as a node map of memories, components and files, check "changed since" flags, qualify candidates and review long-term proposals.
 - **Reviewed long-term memory:** facts, procedures and events approved with a recorded reason. Only approved items reach the brief, and `user`-scope items carry across projects.
 - **Secret redaction** before every write
 - **No native dependencies:** uses Node's built-in `node:sqlite`
@@ -144,6 +145,8 @@ synapse export --out mem.json && synapse import mem.json
 | `SYNAPSE_DB` | `$SYNAPSE_HOME/synapse.db` | Database file |
 | `SYNAPSE_MODE` | `lite` | `full` enables graph and export tools |
 | `SYNAPSE_HOOK_INJECT` | `full` | `minimal` (one-line hint) or `silent` |
+| `SYNAPSE_FILE_NOTES` | on | `0` turns off file notes |
+| `SYNAPSE_CANDIDATE_DAYS` | `14` | Archive unreviewed candidates after N days; `0` = never |
 | `SYNAPSE_PROJECT_ROOT` | cwd | Project root the MCP server binds to |
 | `SYNAPSE_DEBUG` | – | Print hook errors to stderr |
 

@@ -233,7 +233,7 @@ describe('setup copilot and gemini', () => {
     expect(s.theme).toBe('dark');
     expect(Object.keys(s.hooks)).toEqual(['AfterTool', 'SessionStart', 'BeforeAgent', 'PreCompress', 'SessionEnd']);
     expect(s.hooks.AfterTool).toHaveLength(2);
-    expect(s.hooks.AfterTool[1]).toEqual({ matcher: 'write_file|replace|edit|smart_edit|run_shell_command', hooks: [{ type: 'command', command: '"/opt/node" "/opt/synapse/cli.js" hook --agent gemini', timeout: 10000 }] });
+    expect(s.hooks.AfterTool[1]).toEqual({ matcher: 'write_file|replace|edit|smart_edit|run_shell_command|read_file', hooks: [{ type: 'command', command: '"/opt/node" "/opt/synapse/cli.js" hook --agent gemini', timeout: 10000 }] });
     expect(s.mcpServers.synapse.env).toEqual({ SYNAPSE_PROJECT_ROOT: root(), SYNAPSE_HOOKS: '1' });
   });
 

@@ -171,6 +171,21 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .md pre.out { max-height: 300px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; }
 .md pre.cmdblock { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--green); color: var(--on-green); }
 .dflags { margin: -6px 0 14px; }
+/* Editing and merging in the detail panel */
+.field { display: grid; gap: 5px; margin: 0 0 14px; min-width: 0; }
+.flabel { font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.fhint { font-size: 12px; color: var(--faint); }
+.field input[type=text], .field select { width: 100%; }
+.frow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+textarea { width: 100%; background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 10px 14px; font-size: 14px; line-height: 1.5; resize: vertical; transition: border-color .15s; }
+textarea:hover { border-color: var(--faint); }
+textarea:focus-visible { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px color-mix(in srgb, var(--lav) 70%, transparent); }
+textarea.mono { font-family: var(--mono); font-size: 12.5px; }
+.detail input[type=search] { width: 100%; }
+.detail .flag.warn { white-space: normal; overflow-wrap: anywhere; }
+.mergelist .row { grid-template-columns: auto minmax(0, 1fr); }
+.mergelist .row .meta { grid-column: 2; }
+.dactions .spacer { flex: 1; }
 .md code { background: var(--soft); border-radius: 5px; padding: 1px 5px; }
 .md pre { background: var(--soft); border-radius: 12px; padding: 12px 14px; overflow-x: auto; white-space: pre; }
 .md pre code { background: none; padding: 0; }
@@ -484,7 +499,7 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
   }
 
   const S = { meta: null, stats: null, project: '', view: 'memories', q: '', type: '', status: 'active', source: '', curated: true,
-    ltState: 'proposed', selected: null, items: [], picked: new Set(), seq: 0 };
+    ltState: 'proposed', selected: null, items: [], picked: new Set(), seq: 0, current: null, editing: null };
   const VIEWS = [['memories', 'Memories'], ['graph', 'Graph'], ['changed', 'Changed'], ['candidates', 'Candidates'], ['sessions', 'Sessions'], ['longterm', 'Long-term']];
   const LIST_VIEWS = ['memories', 'changed', 'candidates'];
 
@@ -498,7 +513,7 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
   function renderKeys() {
     fill($('keys'), h('p', { class: 'eyebrow' }, 'Keyboard'),
       h('kbd', {}, '/'), 'Search', h('kbd', {}, 'j  k'), 'Next / previous', h('kbd', {}, 'x'), 'Pick a candidate',
-      h('kbd', {}, 'Esc'), 'Close or clear', h('kbd', {}, '?'), 'Show these keys',
+      h('kbd', {}, 'e'), 'Edit the open memory', h('kbd', {}, 'Esc'), 'Close, clear or cancel an edit', h('kbd', {}, '?'), 'Show these keys',
       h('p', { class: 'eyebrow' }, 'Graph'), h('kbd', {}, 'Enter'), 'Jump to the next match', h('kbd', {}, 'f'), 'Fit the map',
       h('kbd', {}, '+  −'), 'Zoom in / out', h('kbd', {}, 'l'), 'Local graph of the open node', h('kbd', {}, 'dbl-click'), 'Local graph of a node');
   }
@@ -1185,6 +1200,7 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
 
   function renderDetail(m) {
     const d = $('detail');
+    S.current = m || null; S.editing = null;
     if (!m) {
       fill(d, h('div', { class: 'empty' }, h('img', { src: LOGO, alt: '' }), h('h2', {}, 'Pick a memory, ', h('em', {}, 'read it whole.')),
         h('p', {}, 'Choose one from the list, or press j to start at the top.')));
@@ -1200,6 +1216,9 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
     if (m.status === 'active') actions.push(act('Resolve', '/api/memory/status', { status: 'resolved' }, '', 'Resolved'), act('Archive', '/api/memory/status', { status: 'archived' }, 'danger', 'Archived'));
     else actions.push(act('Reopen', '/api/memory/status', { status: 'active' }, '', 'Reopened'));
     if (!m.changes.length && m.status === 'active') actions.push(act('Helpful', '/api/memory/feedback', { signal: 'helpful' }, '', 'Thanks, noted'));
+    actions.push(h('span', { class: 'spacer' }),
+      h('button', { class: 'btn', title: 'Fix the title, text, type or files (e)', onclick: () => renderEditor(m) }, 'Edit'),
+      m.status === 'active' ? h('button', { class: 'btn', title: 'Fold duplicates into this memory', onclick: () => renderMerge(m) }, 'Merge…') : null);
     const kv = [
       ['Area', m.entity], ['Status', m.status + (m.admission === 'candidate' ? ' · candidate' : '')], ['Source', m.source],
       ['Created', new Date(m.createdAt).toLocaleString()], m.updatedAt ? ['Updated', new Date(m.updatedAt).toLocaleString() + (m.revisionCount > 1 ? ' · revision ' + m.revisionCount : '')] : null,
@@ -1225,8 +1244,99 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
       m.replaces.length ? h('div', { class: 'section' }, h('h3', {}, 'Replaces'), h('ul', {}, ...m.replaces.map((r) => h('li', {}, h('button', { class: 'link', onclick: () => select(r.id) }, '#' + r.id + ' ' + r.title))))) : null,
       list('Feedback', m.feedback.map((f) => f.signal + ' · ' + when(f.createdAt) + (f.note ? ' · ' + f.note : ''))),
       h('div', { class: 'section' }, h('h3', {}, 'About'), h('dl', { class: 'kv' }, ...kv.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))));
-    fill($('dactions'), ...actions);
+    fill($('dactions'), ...actions.filter(Boolean));
     d.scrollTop = 0;
+  }
+
+  // Edit a memory in place: title, type, area, narrative, facts, files and concepts. A candidate can be kept as it is saved.
+  function renderEditor(m) {
+    S.current = m; S.editing = m.id;
+    const field = (label, el, hint) => h('label', { class: 'field' }, h('span', { class: 'flabel' }, label), el, hint ? h('span', { class: 'fhint' }, hint) : null);
+    const area = (value, rows, cls) => { const t = h('textarea', { rows, class: cls }); t.value = value; return t; };
+    const title = h('input', { type: 'text', value: m.title, maxlength: 300 });
+    const type = h('select', {}, ...S.meta.types.map((t) => h('option', { value: t, selected: t === m.type }, typeName(t))));
+    const entity = h('input', { type: 'text', value: m.entity });
+    const narrative = area(m.narrative || '', 12);
+    const facts = area((m.facts || []).join('\n'), 4);
+    const files = area((m.files || []).join('\n'), 3, 'mono');
+    const concepts = h('input', { type: 'text', value: (m.concepts || []).join(', ') });
+    const lines = (el) => el.value.split('\n').map((x) => x.trim()).filter(Boolean);
+    const candidate = m.admission === 'candidate';
+    const save = async (qualify) => {
+      if (!title.value.trim()) { title.focus(); toast('A title is required'); return; }
+      try {
+        await api('/api/memory/edit', null, { id: m.id, title: title.value, type: type.value, entity: entity.value, narrative: narrative.value,
+          facts: lines(facts), files: lines(files), concepts: concepts.value.split(',').map((x) => x.trim()).filter(Boolean), qualify });
+        toast(qualify ? 'Saved and kept' : 'Saved');
+        await refresh(m.id);
+      } catch (e) { toast(e.message); }
+    };
+    const form = h('form', { onsubmit: (e) => { e.preventDefault(); save(candidate); },
+      onkeydown: (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); save(candidate); } } },
+      field('Title', title),
+      h('div', { class: 'frow' }, field('Type', type), field('Area', entity)),
+      field('Narrative', narrative, 'Markdown works. The first sentence becomes the summary line.'),
+      field('Facts', facts, 'One per line.'),
+      field('Files', files, 'Project-relative paths, one per line. Agents are told about this memory when they open these files.'),
+      field('Concepts', concepts, 'Comma-separated. "pinned" keeps it from decaying.'));
+    fill($('detail'), h('div', { class: 'dhead' }, h('span', { class: 'eyebrow' }, 'Editing'), h('span', { class: 'btn small idbtn mono', 'aria-hidden': 'true' }, '#' + m.id)),
+      h('h2', {}, prettyTitle(m.title)), form);
+    fill($('dactions'),
+      h('button', { class: 'btn primary', onclick: () => save(candidate) }, candidate ? 'Save and keep' : 'Save'),
+      candidate ? h('button', { class: 'btn', onclick: () => save(false) }, 'Save as candidate') : null,
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'btn', onclick: () => renderDetail(m) }, 'Cancel'));
+    $('detail').scrollTop = 0;
+    title.focus();
+    revealDetail();
+  }
+
+  // Fold duplicates into this memory: pick from similar memories or search, then merge (the others are archived).
+  function renderMerge(m) {
+    S.current = m; S.editing = m.id;
+    const picked = new Set();
+    const list = h('div', { class: 'list mergelist' });
+    const btn = h('button', { class: 'btn primary', disabled: true }, 'Merge');
+    const sync = () => { btn.disabled = !picked.size; btn.textContent = picked.size ? 'Merge ' + picked.size + ' into #' + m.id : 'Merge'; };
+    const row = (x) => {
+      const box = h('input', { type: 'checkbox', checked: picked.has(x.id), 'aria-label': 'Merge #' + x.id + ' into #' + m.id,
+        onclick: (e) => e.stopPropagation(), onchange: (e) => { if (e.target.checked) picked.add(x.id); else picked.delete(x.id); sync(); } });
+      return h('div', { class: 'row bulkrow', onclick: () => { box.checked = !box.checked; box.dispatchEvent(new Event('change')); } }, box,
+        h('span', { class: 'title' }, prettyTitle(x.title)),
+        h('div', { class: 'meta' }, typeTag(x.type), h('span', {}, x.entity), h('span', { class: 'mono' }, '#' + x.id),
+          x.admission === 'candidate' ? h('span', { class: 'flag' }, 'candidate') : null, x.score != null ? h('span', { class: 'small' }, Math.round(x.score * 100) + '% alike') : null));
+    };
+    const show = (items, empty) => fill(list, items.length ? items.filter((x) => x.id !== m.id).map(row) : [h('p', { class: 'small', style: 'padding: 14px 20px; margin: 0' }, empty)]);
+    const heading = h('h3', {}, 'Similar memories');
+    let timer;
+    const search = h('input', { type: 'search', placeholder: 'Search for another memory…', 'aria-label': 'Search for a memory to merge',
+      oninput: (e) => {
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+          const q = e.target.value.trim();
+          if (!q) { heading.textContent = 'Similar memories'; show(await api('/api/memory/similar', { id: m.id }), 'Nothing similar. Search instead.'); return; }
+          heading.textContent = 'Matches';
+          const res = await api('/api/memories', { project: S.project, q, status: 'active', limit: 20 });
+          show(res.items, 'No matches.');
+        }, 180);
+      } });
+    btn.onclick = async () => {
+      try {
+        await api('/api/memory/merge', null, { into: m.id, from: [...picked] });
+        toast('Merged ' + plural(picked.size, 'memory', 'memories') + ' into #' + m.id + '. Tidy up the text.');
+        await refresh(m.id);
+        renderEditor(await api('/api/memory', { id: m.id }));
+      } catch (e) { toast(e.message); }
+    };
+    fill($('detail'), h('div', { class: 'dhead' }, h('span', { class: 'eyebrow' }, 'Merge into #' + m.id)), h('h2', {}, prettyTitle(m.title)),
+      h('p', { class: 'small' }, 'Pick the memories that say the same thing. Their facts, files and text are added to this one, and they are archived pointing here.'),
+      search, h('div', { class: 'section' }, heading, list));
+    fill($('dactions'), btn, h('span', { class: 'spacer' }), h('button', { class: 'btn', onclick: () => renderDetail(m) }, 'Cancel'));
+    show([], 'Looking…');
+    api('/api/memory/similar', { id: m.id }).then((items) => { if (!search.value) show(items, 'Nothing similar. Search instead.'); }).catch((e) => toast(e.message));
+    $('detail').scrollTop = 0;
+    search.focus();
+    revealDetail();
   }
 
   async function refresh(id) {
@@ -1265,6 +1375,7 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
     if (e.key === 'Escape') {
       if (!$('keys').hidden) { toggleKeys(false); return; }
       if (typing) { if (e.target.id === 'q' && e.target.value) return; e.target.blur(); return; }
+      if (S.editing && S.current) { renderDetail(S.current); return; }
       if (S.view === 'graph' && G.escape && G.escape()) return;
       if (S.selected || G.focus) { S.selected = null; G.focus = null; markSelected(); renderDetail(); if (G.redraw) G.redraw(); }
       return;
@@ -1272,6 +1383,7 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
     if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === '?') { toggleKeys(); return; }
     if (e.key === '/') { const q = $('q'); if (q) { e.preventDefault(); q.focus(); q.select(); } return; }
+    if (e.key === 'e' && S.current && !S.editing && S.selected === S.current.id) { e.preventDefault(); renderEditor(S.current); return; }
     if (S.view === 'graph' && G.keys && G.keys(e)) { e.preventDefault(); return; }
     if (!LIST_VIEWS.includes(S.view) || !S.items.length) return;
     const down = e.key === 'j' || e.key === 'ArrowDown', up = e.key === 'k' || e.key === 'ArrowUp';

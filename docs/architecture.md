@@ -37,10 +37,11 @@
 | `src/maintenance.ts` | Retention report and archiving, export/import |
 | `src/agents.ts` | Per-agent hook adapters: detect the agent (incl. Devin via `DEVIN_PROJECT_DIR`), normalize Cursor, Codex and Devin payloads (including `apply_patch` parsing) and format each agent's response |
 | `src/hooks.ts` | Agent-neutral hook handling: brief injection, capture rules, failure detection, session summaries |
+| `src/file-notes.ts` | File notes: the reviewed memories about a file the agent reads or edits, once per file per session |
 | `src/setup.ts` | `synapse setup <agent>`: merge hooks and MCP config for Claude Code, Cursor, Codex, Devin CLI, Copilot CLI, Gemini CLI and Antigravity, and prevent duplicate hooks where Devin imports Claude's |
 | `src/server.ts` | MCP tool registration (lite and full); without hooks, the brief, the session and rolling checkpoints |
 | `src/worktree.ts` | Without hooks: detects edited files by comparing the git working tree between tool calls |
-| `src/consolidate.ts` | Merges a session's auto-captured edit records per area and archives older duplicate command records |
+| `src/consolidate.ts` | Merges a session's auto-captured edit records per area and command runs into one, archives older duplicate command records and stale candidates, and re-filters old command records |
 | `src/ignore.ts` | `.synapseignore` patterns and the secret-file defaults |
 | `src/ui.ts`, `src/ui-page.ts`, `src/ui-graph.ts` | `synapse ui`: a local node:http server (127.0.0.1, per-run token), the single page it serves, and the memory graph its Graph view draws |
 | `src/doctor.ts` | `synapse doctor agents` (check and repair each agent's setup) and `synapse uninstall` |

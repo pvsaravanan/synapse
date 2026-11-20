@@ -169,8 +169,10 @@ Hooks keep one rolling record per edited file and per command, which piles up: a
 
 - **Edit records merge per area.** Two or more in one area (the entity from the path, such as `api` for `src/api/limit.ts`) become one record, `Changed api: src/api/limit.ts, src/api/routes.ts +1`, listing each file with an excerpt of its change and the session's goal. A session that closes again (Antigravity, after each turn) folds new edits into the same record.
 - **Older duplicate command records are archived.** Only the newest "Ran: `<command>`" per command is kept, matched on what the command runs (`npm test | tail` counts as `npm test`).
+- **A session's command runs merge into one record**, `Ran 3 commands: npm test, npm run build, npm run lint`, listing each command with how often it ran. A resumed session folds new runs into the same record.
+- **Stale candidates are archived.** Auto-captured candidates that nobody kept, read or rated within 14 days are archived (`SYNAPSE_CANDIDATE_DAYS`; `0` turns it off).
 
-Originals are archived, not deleted, with `supersededBy` pointing at the record that replaced them. Records you qualified or that were retrieved (`synapse_detail`) are left alone, and so are a session's fixes, failures and goal. `synapse consolidate [--dry-run]` does the same for sessions that ended before consolidation existed.
+Originals are archived, not deleted, with `supersededBy` pointing at the record that replaced them (stale candidates have none), and can be reopened. Records you qualified or that were retrieved (`synapse_detail`) are left alone, and so are a session's fixes, failures and goal. `synapse consolidate [--dry-run]` does the same for sessions that ended before consolidation existed, and also re-applies the current [capture rules](agent-integration.md#capture-rules) to older command records, archiving unreviewed searches and file prints that older versions kept.
 
 ### Ignored files
 

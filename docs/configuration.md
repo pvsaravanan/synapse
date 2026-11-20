@@ -10,7 +10,9 @@ Synapse is configured entirely through environment variables. There is no config
 | `SYNAPSE_PROJECT_ROOT` | current directory | Directory the MCP server uses to detect its project |
 | `SYNAPSE_NUDGE` | on | `0` turns off the once-per-session reminder to store what was learned ([details](agent-integration.md#store-reminder)) |
 | `SYNAPSE_HOOKS` | unset | `1` tells the MCP server that hooks are installed for its agent, so the hooks deliver the brief and run the session. Setup sets it. Unset, the server does both itself; see [agents without hooks](agent-integration.md#agents-without-hooks) |
-| `SYNAPSE_HOOK_INJECT` | `full` | `full`, `minimal` or `silent`; see [Agent integration](agent-integration.md#controlling-injection) |
+| `SYNAPSE_HOOK_INJECT` | `full` | `full`, `minimal` or `silent`; see [Agent integration](agent-integration.md#controlling-injection). `silent` also turns off file notes |
+| `SYNAPSE_FILE_NOTES` | on | `0` stops hooks from showing the memories about a file when the agent reads or edits it ([file notes](agent-integration.md#file-notes)) |
+| `SYNAPSE_CANDIDATE_DAYS` | `14` | Auto-captured candidates nobody kept, read or rated are archived after this many days; `0` turns it off ([consolidation](concepts.md#consolidation)) |
 | `SYNAPSE_DEBUG` | unset | When set, hook errors are printed to stderr |
 
 `synapse serve --mode full` overrides `SYNAPSE_MODE`.

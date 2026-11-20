@@ -162,8 +162,9 @@ function mergeNestedHooks(settings: Record<string, any>, events: Record<string, 
   for (const [event, timeout] of Object.entries(events)) {
     const groups: any[] = (settings.hooks[event] ??= []);
     const ours = groups.flatMap((g) => (g?.hooks ?? []).filter((h: any) => isSynapseHookCommand(h?.command)));
-    // Refresh existing entries, so a moved install or a new Node path takes effect on re-run.
+    // Refresh existing entries, so a moved install, a new Node path or a widened matcher takes effect on re-run.
     for (const h of ours) Object.assign(h, { command, timeout });
+    if (matchers[event]) for (const g of groups) if ((g?.hooks ?? []).some((h: any) => isSynapseHookCommand(h?.command))) g.matcher = matchers[event];
     if (ours.length === 0) groups.push({ ...(matchers[event] ? { matcher: matchers[event] } : {}), hooks: [{ type: 'command', command, timeout }] });
   }
 }
@@ -238,7 +239,7 @@ export function setupCursor(o: SetupOptions): SetupReport {
 // ── Codex ────────────────────────────────────────────────────────────────
 
 /** Codex hooks use Claude's nested format; SessionEnd handlers are capped at 3 seconds. */
-export const CODEX_EVENTS: Record<string, number> = { SessionStart: 10, UserPromptSubmit: 10, PostToolUse: 10, PreCompact: 10, Stop: 10, SessionEnd: 3 };
+export const CODEX_EVENTS: Record<string, number> = { SessionStart: 10, UserPromptSubmit: 10, PreToolUse: 10, PostToolUse: 10, PreCompact: 10, Stop: 10, SessionEnd: 3 };
 
 const tomlString = (s: string) => JSON.stringify(s);
 
@@ -446,7 +447,7 @@ export function setupCopilot(o: SetupOptions): SetupReport {
 
 /** Gemini CLI timeouts are in milliseconds. */
 export const GEMINI_EVENTS: Record<string, number> = { SessionStart: 10_000, BeforeAgent: 10_000, AfterTool: 10_000, PreCompress: 10_000, SessionEnd: 10_000 };
-const GEMINI_MATCHERS = { AfterTool: 'write_file|replace|edit|smart_edit|run_shell_command' };
+const GEMINI_MATCHERS = { AfterTool: 'write_file|replace|edit|smart_edit|run_shell_command|read_file' };
 
 export function setupGemini(o: SetupOptions): SetupReport {
   const report: SetupReport = { agent: 'gemini', changes: [], notes: [] };

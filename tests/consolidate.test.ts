@@ -6,13 +6,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { normalizeHookPayload } from '../src/agents.js';
-import { consolidateProject, consolidateSession } from '../src/consolidate.js';
+import { archiveStaleCandidates, consolidateProject, consolidateSession, refilterCommands } from '../src/consolidate.js';
 import { openDatabase, type DB } from '../src/db.js';
 import { hashFiles } from '../src/freshness.js';
 import { handleHook } from '../src/hooks.js';
 import { isIgnored, matches, parseIgnore } from '../src/ignore.js';
 import { detectProject } from '../src/project.js';
-import { getObservation, listObservations, promoteObservation, recordAccess } from '../src/store.js';
+import { getObservation, listObservations, promoteObservation, recordAccess, storeObservation } from '../src/store.js';
 
 let db: DB;
 let dir: string;
@@ -98,16 +98,53 @@ describe('consolidation', () => {
     expect(merged[0].filesModified.sort()).toEqual(['src/api/a.ts', 'src/api/b.ts', 'src/api/c.ts']);
   });
 
-  it('keeps only the newest "Ran:" record per command across sessions', () => {
+  it('keeps only the newest "Ran:" record per command across sessions, and merges a session\'s runs into one', () => {
     bash('s1', 'npm test 2>&1 | tail -5');
     end('s1');
     bash('s2', 'npm test');
     bash('s2', 'npm run build');
+    bash('s2', 'npm test -- --watch=false');
     end('s2');
-    const runs = active().filter((o) => o.title.startsWith('Ran: '));
-    expect(runs.map((o) => `${o.title} ${o.sessionId}`).sort()).toEqual(['Ran: npm run build s2', 'Ran: npm test s2']);
+    const runs = active().filter((o) => o.title.startsWith('Ran'));
+    expect(runs.map((o) => `${o.title} ${o.sessionId}`)).toEqual(['Ran 3 commands: npm test, npm run build, npm test -- --watch=false s2']);
+    expect(runs[0].narrative).toContain('Commands run in this session:\n- \x60npm test\x60');
     const old = listObservations(db, { projectId: project().id, limit: 100, status: 'archived' }).find((o) => o.title.startsWith('Ran: npm test 2>&1'))!;
     expect(getObservation(db, old.supersededBy!)!.sessionId).toBe('s2');
+    // A resumed session folds its new runs into the same record, counting repeats.
+    hook('s2', { hook_event_name: 'UserPromptSubmit', prompt: 'continue' });
+    bash('s2', 'npm run build');
+    end('s2');
+    const again = active().filter((o) => o.title.startsWith('Ran'));
+    expect(again).toHaveLength(1);
+    expect(again[0].narrative).toContain('- \x60npm run build\x60 ×2');
+  });
+
+  it('archives candidates nobody kept, read or rated after SYNAPSE_CANDIDATE_DAYS', () => {
+    bash('s1', 'npm test');
+    edit('s1', 'src/api/a.ts');
+    const [run, ed] = [active().find((o) => o.title.startsWith('Ran'))!, active().find((o) => o.title.startsWith('Edited'))!];
+    recordAccess(db, [ed.id]);
+    const later = new Date(Date.now() + 20 * 86_400_000);
+    expect(archiveStaleCandidates(db, project().id, { days: 14, now: later, dryRun: true })).toEqual([run.id]);
+    expect(archiveStaleCandidates(db, project().id, { days: 30, now: later })).toEqual([]);
+    expect(archiveStaleCandidates(db, project().id, { days: 0, now: later })).toEqual([]); // 0 turns it off
+    expect(archiveStaleCandidates(db, project().id, { days: 14, now: later })).toEqual([run.id]);
+    expect(getObservation(db, run.id)!.status).toBe('archived');
+    expect(getObservation(db, ed.id)!.status).toBe('active'); // it was read
+  });
+
+  it('re-applies the capture rule to command records captured before it', () => {
+    const p = project();
+    const old = (title: string, type: 'discovery' | 'gotcha', narrative: string) =>
+      storeObservation(db, { projectId: p.id, entityName: 'commands', type, title, narrative, source: 'hook', admissionState: 'candidate', topicKey: `hook/cmd/${title}/s0` }).observation;
+    const grep = old('Ran: grep -n test tests/a.test.ts', 'discovery', '$ grep -n "it(" tests/a.test.ts\n\n12: it(...)');
+    const sed = old('Command failed: sed -n 1,40p src/a.ts', 'gotcha', '$ sed -n 1,40p src/a.ts\n\n  error: unexpected token');
+    const missing = old('Command failed: cat nope.txt', 'gotcha', '$ grep x nope.txt\n\ngrep: nope.txt: No such file or directory');
+    const tests = old('Ran: npm test', 'discovery', '$ npm test\n\n3 passed');
+    expect(refilterCommands(db, p.id, { dryRun: true }).sort()).toEqual([grep.id, sed.id].sort());
+    expect(getObservation(db, grep.id)!.status).toBe('active');
+    refilterCommands(db, p.id);
+    expect([grep, sed, missing, tests].map((o) => getObservation(db, o.id)!.status)).toEqual(['archived', 'archived', 'active', 'active']);
   });
 
   it('leaves records that were qualified or retrieved alone', () => {

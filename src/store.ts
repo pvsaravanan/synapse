@@ -2,12 +2,14 @@ import type { DB } from './db.js';
 import { hashFile, hashFiles, type FileHashes } from './freshness.js';
 import path from 'node:path';
 import { redactSecrets } from './secrets.js';
-import type {
-  FeedbackSignal,
-  Observation,
-  ObservationStatus,
-  StoreInput,
-  StoreResult,
+import {
+  OBSERVATION_TYPES,
+  type FeedbackSignal,
+  type Observation,
+  type ObservationStatus,
+  type ObservationType,
+  type StoreInput,
+  type StoreResult,
 } from './types.js';
 import type { ScoringContext } from './retention.js';
 
@@ -422,4 +424,108 @@ function retireDraftFixes(db: DB, fix: Observation): void {
   const files = new Set(fix.filesModified);
   const overlapping = drafts.filter((d) => files.size === 0 || d.filesModified.some((f) => files.has(f)));
   setStatus(db, overlapping.map((d) => d.id), 'resolved', fix.projectId);
+}
+
+export interface ObservationEdit {
+  title?: string;
+  narrative?: string;
+  type?: string;
+  entityName?: string;
+  facts?: string[];
+  filesModified?: string[];
+  concepts?: string[];
+  /** Also qualify it (a candidate someone kept, now with a better title). */
+  qualify?: boolean;
+}
+
+/**
+ * Edit a memory in place (a person fixing a title or narrative). Everything passes through redactSecrets; the revision
+ * count goes up. Files it newly names are hashed from current content when `rootPath` is known, so they aren't
+ * flagged as changed straight away. Throws on an unknown type or an empty title.
+ */
+export function editObservation(db: DB, id: number, edit: ObservationEdit, rootPath?: string): Observation {
+  const o = getObservation(db, id);
+  if (!o) throw new Error(`No memory #${id}`);
+  const type = (edit.type ?? o.type) as ObservationType;
+  if (!(OBSERVATION_TYPES as readonly string[]).includes(type)) throw new Error(`Unknown type: ${type}`);
+  const s = sanitize({
+    projectId: o.projectId,
+    type,
+    entityName: edit.entityName ?? o.entityName,
+    title: edit.title ?? o.title,
+    narrative: edit.narrative ?? o.narrative,
+    facts: edit.facts ?? o.facts,
+    filesModified: (edit.filesModified ?? o.filesModified).map((f) => f.trim().replace(/^\.\//, '')),
+    concepts: edit.concepts ?? o.concepts,
+  });
+  if (!s.title) throw new Error('A title is required');
+  const body = [s.title, s.narrative, ...s.facts].join('\n');
+  const added = s.filesModified.filter((f) => !(f in o.fileHashes));
+  const hashes = { ...Object.fromEntries(Object.entries(o.fileHashes).filter(([f]) => s.filesModified.includes(f))), ...(rootPath ? hashFiles(rootPath, added) : {}) };
+  db.prepare(
+    `UPDATE observations SET type=?, entityName=?, title=?, narrative=?, facts=?, filesModified=?, concepts=?, tokens=?,
+     hasCausalLanguage=?, fileHashes=?, updatedAt=?, revisionCount=revisionCount+1,
+     admissionState=CASE WHEN ? THEN 'qualified' ELSE admissionState END WHERE id=?`,
+  ).run(
+    type, s.entityName, s.title, s.narrative, JSON.stringify(s.facts), JSON.stringify(s.filesModified), JSON.stringify(s.concepts),
+    estimateTokens(body), CAUSAL.test(body) ? 1 : 0, JSON.stringify(hashes), now(), edit.qualify ? 1 : 0, id,
+  );
+  return getObservation(db, id)!;
+}
+
+/**
+ * Merge duplicates into one memory: `into` keeps its title and gains the others' facts, files, concepts and related
+ * entities and commits, with each one's narrative appended under a "Merged from #id" heading (edit it afterwards). The
+ * others are archived with `supersededBy` pointing at it, never deleted; their read counts carry over. If any of them
+ * was qualified, the result is too. All must be in the same project.
+ */
+export function mergeObservations(db: DB, intoId: number, fromIds: number[]): Observation {
+  const into = getObservation(db, intoId);
+  if (!into) throw new Error(`No memory #${intoId}`);
+  const from = [...new Set(fromIds)].filter((id) => id !== intoId).map((id) => {
+    const o = getObservation(db, id);
+    if (!o) throw new Error(`No memory #${id}`);
+    if (o.projectId !== into.projectId) throw new Error(`#${id} belongs to another project`);
+    return o;
+  });
+  if (from.length === 0) throw new Error('Pick at least one other memory to merge');
+  const all = [into, ...from];
+  const narrative = [into.narrative, ...from.filter((o) => o.narrative.trim() && !into.narrative.includes(o.narrative.trim()))
+    .map((o) => `#### Merged from #${o.id}: ${o.title}\n${o.narrative.trim()}`)].filter(Boolean).join('\n\n');
+  const facts = uniq(all.flatMap((o) => o.facts));
+  const body = [into.title, narrative, ...facts].join('\n');
+  db.prepare(
+    `UPDATE observations SET narrative=?, facts=?, filesModified=?, concepts=?, relatedEntities=?, relatedCommits=?, fileHashes=?,
+     tokens=?, hasCausalLanguage=?, updatedAt=?, revisionCount=revisionCount+1,
+     admissionState=CASE WHEN ? THEN 'qualified' ELSE admissionState END WHERE id=?`,
+  ).run(
+    narrative, JSON.stringify(facts), JSON.stringify(uniq(all.flatMap((o) => o.filesModified))), JSON.stringify(uniq(all.flatMap((o) => o.concepts))),
+    JSON.stringify(uniq([...all.flatMap((o) => o.relatedEntities), ...from.map((o) => o.entityName)].filter((e) => e !== into.entityName))),
+    JSON.stringify(uniq(all.flatMap((o) => o.relatedCommits))),
+    JSON.stringify(Object.assign({}, ...[...from].reverse().map((o) => o.fileHashes), into.fileHashes)),
+    estimateTokens(body), CAUSAL.test(body) ? 1 : 0, now(), all.some((o) => o.admissionState === 'qualified') ? 1 : 0, intoId,
+  );
+  const archive = db.prepare("UPDATE observations SET status = 'archived', supersededBy = ?, updatedAt = ? WHERE id = ?");
+  const reads = db.prepare('SELECT COALESCE(SUM(accessCount), 0) AS n FROM observation_access WHERE observationId IN (' + from.map(() => '?').join(',') + ')').get(...from.map((o) => o.id)) as { n: number };
+  for (const o of from) archive.run(intoId, now(), o.id);
+  if (Number(reads.n) > 0) {
+    db.prepare(
+      `INSERT INTO observation_access(observationId, accessCount, lastAccessed) VALUES(?, ?, ?)
+       ON CONFLICT(observationId) DO UPDATE SET accessCount = accessCount + excluded.accessCount`,
+    ).run(intoId, Number(reads.n), now());
+  }
+  return getObservation(db, intoId)!;
+}
+
+/** Active memories of the same project most like `id` (title and narrative), for picking duplicates to merge. */
+export function similarObservations(db: DB, id: number, limit = 8): { observation: Observation; score: number }[] {
+  const o = getObservation(db, id);
+  if (!o) return [];
+  const text = `${o.title} ${o.narrative}`;
+  return listObservations(db, { projectId: o.projectId, status: 'active', limit: 2000 })
+    .filter((x) => x.id !== id)
+    .map((x) => ({ observation: x, score: similarity(text, `${x.title} ${x.narrative}`) + (x.entityName === o.entityName ? 0.05 : 0) }))
+    .filter((x) => x.score >= 0.12)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
 }

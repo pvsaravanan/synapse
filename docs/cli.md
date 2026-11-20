@@ -71,7 +71,7 @@ Commands that work on memory use the project of the **current directory** (see [
 |---|---|
 | `synapse retention [--archive]` | Show retention zones; archive expired memories |
 | `synapse ui [--port N] [--open]` | Browse and curate memory in a local web page ([details](#synapse-ui)) |
-| `synapse consolidate [--dry-run]` | Merge ended sessions' auto-captured edit records per area, and archive older duplicate command records ([consolidation](concepts.md#consolidation)). Runs automatically when a session ends |
+| `synapse consolidate [--dry-run]` | Merge ended sessions' auto-captured edit records per area and command runs per session, archive older duplicate command records and stale candidates, and re-apply the current capture rules to older command records ([consolidation](concepts.md#consolidation)). Runs automatically when a session ends (except the re-filter) |
 | `synapse export [--out FILE]` | Write this project's observations, sessions, checkpoints and long-term items as JSON (stdout by default) |
 | `synapse import <file> [--project ID]` | Import a bundle into this project or another. Topic and duplicate rules apply, so re-importing is safe |
 
@@ -108,7 +108,9 @@ Starts a local web page for the project in the current directory (any project ca
 - **Sessions:** each session's agent, summary, checkpoints and records.
 - **Long-term:** proposals to approve or reject, and approved items to retire, each with a required reason (recorded as "via synapse ui").
 
-The top of the page shows curated, candidate, changed-since and session counts; click one to open that view. Every memory can be resolved, archived or reopened. Keyboard: `/` focuses search, `j`/`k` (or the arrow keys) move through the list, `x` picks the open candidate, `Esc` closes the memory, leaves the search box or (in the graph) the local graph, and `?` (or the round button at the bottom left) lists these keys.
+The top of the page shows curated, candidate, changed-since and session counts; click one to open that view. Every memory can be resolved, archived or reopened.
+
+**Editing:** **Edit** (or `e`) opens the memory as a form: title, type, area, narrative, facts, files and concepts. On a candidate, **Save and keep** saves it and qualifies it in one step, so an auto-captured record can become a curated memory with a better title. Everything saved passes through secret redaction, and newly named files are hashed so they aren't flagged as changed straight away. `Cmd/Ctrl+Enter` saves; `Esc` cancels. **Merge…** folds duplicates into the open memory: it suggests similar memories (or search for one), and merging adds their facts, files, concepts and text (under a "Merged from #id" heading) to it, carries over their read counts, and archives them pointing at it. The editor opens afterwards to tidy the merged text. Keyboard: `/` focuses search, `j`/`k` (or the arrow keys) move through the list, `x` picks the open candidate, `e` edits the open memory, `Esc` closes the memory, cancels an edit, leaves the search box or (in the graph) the local graph, and `?` (or the round button at the bottom left) lists these keys.
 
 The server listens on `127.0.0.1` only, answers only requests addressed to a local host name, and needs the access token in the printed URL for every API call, so other websites can't read or change your memory. The token changes each run. Stop it with Ctrl+C.
 

@@ -12,13 +12,16 @@ import { listLongTerm, reviewLongTerm, LT_STATES } from './longterm.js';
 import { search } from './search.js';
 import { listCheckpoints, recentSessions, checkpointText } from './sessions.js';
 import {
+  editObservation,
   getObservation,
   listObservations,
+  mergeObservations,
   listProjects,
   projectStats,
   promoteObservation,
   recordFeedback,
   setStatus,
+  similarObservations,
 } from './store.js';
 import { OBSERVATION_TYPES, type Observation, type ObservationStatus, type ProjectInfo } from './types.js';
 import { buildMemoryGraph } from './ui-graph.js';
@@ -60,6 +63,17 @@ async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
     throw new HttpError(400, 'Invalid JSON');
   }
 }
+
+const strList = (v: unknown, name: string): string[] | undefined => {
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v) || v.some((x) => typeof x !== 'string')) throw new HttpError(400, `${name} must be a list of strings`);
+  return v as string[];
+};
+const optStr = (v: unknown, name: string): string | undefined => {
+  if (v === undefined) return undefined;
+  if (typeof v !== 'string') throw new HttpError(400, `${name} must be a string`);
+  return v;
+};
 
 const int = (v: unknown, name: string): number => {
   const n = Number(v);
@@ -163,6 +177,7 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
       const changes = changesOf(p, shown);
       return { ...graph, truncated: obs.length > limit, memories: shown.map((o) => summary(o, changes.get(o.id))) };
     },
+    '/api/memory/similar': (u) => similarObservations(db, int(u.searchParams.get('id'), 'id')).map((x) => ({ ...summary(x.observation), score: Math.round(x.score * 100) / 100 })),
     '/api/longterm': (u) => {
       const state = u.searchParams.get('state') ?? 'proposed';
       return listLongTerm(db, projectParam(u), { state: (state === 'all' || (LT_STATES as readonly string[]).includes(state) ? state : 'proposed') as never, limit: 200 });
@@ -179,6 +194,27 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
       return { ok: true };
     },
     '/api/memory/qualify': (b) => ({ ok: promoteObservation(db, int(b.id, 'id')) }),
+    '/api/memory/edit': (b) => {
+      const o = getObservation(db, int(b.id, 'id'));
+      if (!o) throw new HttpError(404, 'Memory not found');
+      try {
+        const edited = editObservation(db, o.id, {
+          title: optStr(b.title, 'title'), narrative: optStr(b.narrative, 'narrative'), type: optStr(b.type, 'type'), entityName: optStr(b.entity, 'entity'),
+          facts: strList(b.facts, 'facts'), filesModified: strList(b.files, 'files'), concepts: strList(b.concepts, 'concepts'), qualify: b.qualify === true,
+        }, o.projectId === project.id ? project.rootPath : undefined);
+        return { ok: true, id: edited.id };
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+    },
+    '/api/memory/merge': (b) => {
+      const from = Array.isArray(b.from) ? b.from.map((x) => int(x, 'from')) : [];
+      try {
+        return { ok: true, id: mergeObservations(db, int(b.into, 'into'), from).id };
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+    },
     '/api/memory/feedback': (b) => {
       const signal = String(b.signal);
       if (!['helpful', 'verified', 'outdated'].includes(signal)) throw new HttpError(400, 'signal must be helpful, verified or outdated');

@@ -47,7 +47,7 @@ Usage: synapse <command> [options]
   setup git [--dry-run]           Install a git post-commit hook that records each commit as a memory (any agent)
   instructions                    Print the memory instructions setup adds (for a global CLAUDE.md / AGENTS.md)
   ui [--port N] [--open]          Browse and curate memory in a local web page
-  consolidate [--dry-run]         Merge ended sessions' auto-captured edit records per area; archive older duplicate command records
+  consolidate [--dry-run]         Merge ended sessions' auto-captured edit and command records; archive duplicate, noise and stale candidates
   doctor                          Diagnose environment
   doctor agents [--agent A] [--global] [--fix]
                                   Check each agent's hooks, MCP entry, instructions and the git hook; --fix repairs them
@@ -104,13 +104,15 @@ async function main(): Promise<void> {
       // Copilot's camelCase payloads carry no event name; setup passes it as --event.
       if (!payload.hook_event_name && str('event')) payload.hook_event_name = str('event');
       const agent = resolveAgent(str('agent'), payload);
-      let context: string | undefined;
+      const contexts: string[] = [];
       let continueWith: string | undefined;
+      // One payload can become several inputs (a patch touching several files); keep every distinct note.
       for (const input of normalizeHookPayload(agent, payload)) {
         const r = handleHook(getDb(), input);
-        context = r.context ?? context;
+        if (r.context && !contexts.includes(r.context)) contexts.push(r.context);
         continueWith = r.continueWith ?? continueWith;
       }
+      const context = contexts.length ? contexts.join('\n\n') : undefined;
       const out = formatHookResult(agent, String(payload.hook_event_name ?? ''), { context, continueWith });
       if (out) process.stdout.write(out);
     } catch (e) {
@@ -152,17 +154,24 @@ async function main(): Promise<void> {
 
   switch (cmd) {
     case 'consolidate': {
-      const { consolidateProject } = await import('./consolidate.js');
+      const { archiveStaleCandidates, consolidateProject, refilterCommands } = await import('./consolidate.js');
       const dryRun = Boolean(v['dry-run']);
+      // Re-filter first, so noise that the current capture rule skips isn't merged into session command records.
+      const refiltered = refilterCommands(db, project.id, { dryRun });
       const results = consolidateProject(db, project, { dryRun });
+      const stale = archiveStaleCandidates(db, project.id, { dryRun });
       const merged = results.flatMap((r) => r.merged);
       const archived = results.flatMap((r) => r.archived);
       console.log(`synapse consolidate${dryRun ? ' (dry run)' : ''}: ${project.id}`);
       for (const r of results) {
         for (const m of r.merged) console.log(`  ${dryRun ? 'would merge' : 'merged'} ${m.from.length} edit record${m.from.length === 1 ? '' : 's'} in ${m.entity}${m.into ? ` into #${m.into}` : ''} (${m.files.length} files, session ${r.sessionId.slice(0, 8)})`);
       }
+      const runs = results.filter((r) => r.commands);
+      for (const r of runs) console.log(`  ${dryRun ? 'would merge' : 'merged'} ${r.commands!.from.length} command record${r.commands!.from.length === 1 ? '' : 's'}${r.commands!.into ? ` into #${r.commands!.into}` : ''} (session ${r.sessionId.slice(0, 8)})`);
       if (archived.length) console.log(`  ${dryRun ? 'would archive' : 'archived'} ${archived.length} older duplicate command record${archived.length === 1 ? '' : 's'}`);
-      if (!merged.length && !archived.length) console.log('  nothing to consolidate');
+      if (refiltered.length) console.log(`  ${dryRun ? 'would archive' : 'archived'} ${refiltered.length} command record${refiltered.length === 1 ? '' : 's'} the capture rule now skips (searches, file prints, read-only "failures")`);
+      if (stale.length) console.log(`  ${dryRun ? 'would archive' : 'archived'} ${stale.length} candidate${stale.length === 1 ? '' : 's'} nobody kept, read or rated in ${(await import('./config.js')).candidateDays()} days`);
+      if (!merged.length && !archived.length && !runs.length && !refiltered.length && !stale.length) console.log('  nothing to consolidate');
       break;
     }
     case 'context': {

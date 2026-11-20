@@ -1,12 +1,16 @@
 /**
  * Consolidation of auto-captured memories. Hooks keep one rolling record per edited file and per command, which piles
  * up: a session touching ten files in one area leaves ten records, and every session's `npm test` leaves another
- * "Ran: npm test". When a session ends, its edit records in one area merge into one, and older duplicate command
- * records are archived. Originals are archived with `supersededBy` pointing at what replaced them, never deleted.
- * Records that were qualified or retrieved are left alone.
+ * "Ran: npm test". When a session ends, its edit records in one area merge into one, its command runs merge into one,
+ * and older duplicate command records are archived. Originals are archived with `supersededBy` pointing at what
+ * replaced them, never deleted. Records that were qualified or retrieved are left alone.
+ *
+ * Candidates nobody kept, read or rated within SYNAPSE_CANDIDATE_DAYS are archived too (`archiveStaleCandidates`), and
+ * `synapse consolidate` re-applies the current capture rule to older command records (`refilterCommands`).
  */
+import { candidateDays } from './config.js';
 import type { DB } from './db.js';
-import { commandKey } from './hooks.js';
+import { commandCapture, commandKey } from './hooks.js';
 import { listObservations, rowToObservation, storeObservation } from './store.js';
 import type { Observation, ProjectInfo } from './types.js';
 
@@ -16,6 +20,8 @@ export interface Consolidation {
   merged: { entity: string; into?: number; files: string[]; from: number[] }[];
   /** Older duplicate command records archived, with the newer record that replaced each. */
   archived: { id: number; by: number }[];
+  /** The session's command runs merged into one record (undefined in a dry run), and the records it replaced. */
+  commands?: { into?: number; from: number[] };
 }
 
 const FILE_TOPIC = 'hook/file/';
@@ -110,7 +116,93 @@ export function consolidateSession(db: DB, project: ProjectInfo, sessionId: stri
       result.archived.push({ id: o.id, by: run.id });
     }
   }
+  // 3. The session's remaining command runs (each distinct command left one "Ran:" record) become one record.
+  const runs = untouchedCandidates(db, project.id, sessionId).filter((o) => o.type === 'discovery' && o.title.startsWith('Ran: ') && o.topicKey?.startsWith('hook/cmd/'));
+  const commandsTopic = `hook/session/${sessionId}/commands`;
+  const previousRuns = db.prepare("SELECT * FROM observations WHERE projectId = ? AND topicKey = ? AND status = 'active' LIMIT 1").get(project.id, commandsTopic) as Record<string, unknown> | undefined;
+  if (runs.length >= 2 || (runs.length && previousRuns)) {
+    // Command -> how many records ran it, earlier merge first.
+    const counts = new Map<string, number>();
+    for (const l of previousRuns ? String(previousRuns.narrative).split('\n') : []) {
+      const m = l.match(/^- \x60(.+)\x60(?: ×(\d+))?$/);
+      if (m) counts.set(m[1], Number(m[2] ?? 1));
+    }
+    for (const r of [...runs].reverse()) {
+      const key = commandKey(r.narrative.split('\n')[0].replace(/^\$ /, '')) || r.title.slice(5);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const keys = [...counts.keys()];
+    if (opts.dryRun) result.commands = { from: runs.map((o) => o.id) };
+    else {
+      const { observation } = storeObservation(db, {
+        projectId: project.id,
+        entityName: 'commands',
+        type: 'discovery',
+        title: `Ran ${keys.length} command${keys.length === 1 ? '' : 's'}: ${keys.slice(0, 3).join(', ')}${keys.length > 3 ? ` +${keys.length - 3}` : ''}`,
+        narrative: `${goal ? `Session goal: ${goal}\n` : ''}Commands run in this session:\n${keys.map((k) => `- \x60${k}\x60${counts.get(k)! > 1 ? ` ×${counts.get(k)}` : ''}`).join('\n')}`,
+        concepts: [...new Set(keys.map((k) => k.split(/\s+/)[0]))].slice(0, 10),
+        sessionId,
+        source: 'hook',
+        admissionState: 'candidate',
+        valueCategory: 'ephemeral',
+        topicKey: commandsTopic,
+      });
+      archive(db, runs.map((o) => o.id), observation.id);
+      result.commands = { into: observation.id, from: runs.map((o) => o.id) };
+    }
+  }
   return result;
+}
+
+/** Hook candidates of a project that nobody kept, read or rated, last touched before `cutoff`. */
+function unreviewedCandidatesBefore(db: DB, projectId: string, cutoff: string): Observation[] {
+  const rows = db
+    .prepare(
+      `SELECT o.* FROM observations o WHERE o.projectId = ? AND o.status = 'active' AND o.source = 'hook' AND o.admissionState = 'candidate'
+       AND COALESCE(o.updatedAt, o.createdAt) < ?
+       AND NOT EXISTS (SELECT 1 FROM observation_access a WHERE a.observationId = o.id AND a.accessCount > 0)
+       AND NOT EXISTS (SELECT 1 FROM feedback f WHERE f.observationId = o.id)`,
+    )
+    .all(projectId, cutoff) as Record<string, unknown>[];
+  return rows.map(rowToObservation);
+}
+
+/**
+ * Archive auto-captured candidates nobody kept, read or rated in `days` days (SYNAPSE_CANDIDATE_DAYS, default 14).
+ * They stay in the database as archived and can be reopened. Returns the archived ids.
+ */
+export function archiveStaleCandidates(db: DB, projectId: string, opts: { days?: number; dryRun?: boolean; now?: Date } = {}): number[] {
+  const days = opts.days ?? candidateDays();
+  if (!(days > 0)) return [];
+  const cutoff = new Date((opts.now ?? new Date()).getTime() - days * 86_400_000).toISOString();
+  const ids = unreviewedCandidatesBefore(db, projectId, cutoff).map((o) => o.id);
+  if (!opts.dryRun && ids.length) {
+    const stmt = db.prepare("UPDATE observations SET status = 'archived', updatedAt = ? WHERE id = ?");
+    const ts = new Date().toISOString();
+    for (const id of ids) stmt.run(ts, id);
+  }
+  return ids;
+}
+
+/**
+ * Re-apply the current capture rule to command records captured before it (searches and file prints that were kept
+ * because a path or heredoc contained "test", or whose printed code looked like an error). Unreviewed ones the rule
+ * would now skip are archived. Returns the archived ids.
+ */
+export function refilterCommands(db: DB, projectId: string, opts: { dryRun?: boolean } = {}): number[] {
+  const ids = unreviewedCandidatesBefore(db, projectId, '9999')
+    .filter((o) => o.topicKey?.startsWith('hook/cmd/') && (o.type === 'gotcha' || o.type === 'discovery') && o.narrative.startsWith('$ '))
+    .filter((o) => {
+      const [cmd, ...rest] = o.narrative.slice(2).split('\n\n');
+      return commandCapture(cmd, rest.join('\n\n'), o.type === 'gotcha') === 'skip';
+    })
+    .map((o) => o.id);
+  if (!opts.dryRun && ids.length) {
+    const stmt = db.prepare("UPDATE observations SET status = 'archived', updatedAt = ? WHERE id = ?");
+    const ts = new Date().toISOString();
+    for (const id of ids) stmt.run(ts, id);
+  }
+  return ids;
 }
 
 /** Consolidate every ended session of a project, oldest first (for history captured before consolidation existed). */
@@ -118,5 +210,5 @@ export function consolidateProject(db: DB, project: ProjectInfo, opts: { dryRun?
   const sessions = db
     .prepare("SELECT id FROM sessions WHERE projectId = ? AND status = 'completed' ORDER BY COALESCE(endedAt, startedAt), rowid")
     .all(project.id) as { id: string }[];
-  return sessions.map((s) => consolidateSession(db, project, String(s.id), opts)).filter((c) => c.merged.length || c.archived.length);
+  return sessions.map((s) => consolidateSession(db, project, String(s.id), opts)).filter((c) => c.merged.length || c.archived.length || c.commands);
 }

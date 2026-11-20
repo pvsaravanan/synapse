@@ -4,7 +4,9 @@
  *
  *   SessionStart     -> inject a task brief as additionalContext
  *   UserPromptSubmit -> record the session's first substantial prompt as its goal (candidate)
- *   PostToolUse      -> capture file edits / significant commands as candidate memories
+ *   PreToolUse       -> (Codex) note the memories about the files an edit or command is about to touch
+ *   PostToolUse      -> note the memories about a file the agent read or edited (once per file per session), and
+ *                       capture file edits / significant commands as candidate memories
  *   PreCompact       -> add a checkpoint row (auto-summary + agent summary) and refresh the session summary
  *   Stop             -> once per session, after real work with nothing stored, ask the agent to store what it learned
  *   SessionEnd       -> close the session with an auto-summary
@@ -21,12 +23,14 @@ import { hookInjectMode, nudgeEnabled } from './config.js';
 import { buildProjectContext } from './context.js';
 import { getMeta, setMeta, type DB } from './db.js';
 import { consolidateSession } from './consolidate.js';
+import { archiveStaleCandidates } from './consolidate.js';
+import { clearFileNotes, fileNotes, filesInCommand, notedFiles, projectRelative, stripHeredocs } from './file-notes.js';
 import { isIgnored } from './ignore.js';
 import { detectProject } from './project.js';
 import { addCheckpoint, checkpointText, endSession, getSession, latestCheckpoint, reopenSession, startSession } from './sessions.js';
 import { redactSecrets } from './secrets.js';
 import { listObservations, refreshSessionHashes, rowToObservation, setStatus, storeObservation } from './store.js';
-import type { ObservationType, ProjectInfo } from './types.js';
+import type { ProjectInfo } from './types.js';
 
 export interface HookInput {
   /** Which agent sent the event (set by agents.ts). */
@@ -60,6 +64,14 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const TRIVIAL_CMD = /^(ls|ll|la|cd|pwd|echo|cat|head|tail|less|more|which|whoami|clear|date|env|printenv|history|true|false|tree|wc|file|stat|open|source|nvm|set|unset|alias)\b|^\.\s/;
 const TRIVIAL_GIT = /^git\s+(status|log|diff|show|branch|remote|fetch|stash list|rev-parse|config --get)\b/;
 const SIGNIFICANT_CMD = /\b(test|vitest|jest|pytest|cargo|go (test|build)|make|tsc|build|lint|eslint|migrate|deploy|docker|kubectl|terraform|npm (run|install|i|ci)|pnpm|yarn|pip install|brew install)\b/;
+/** Programs that only read or search: their output is file content or matches, not an outcome worth remembering. */
+const READ_ONLY_PROGRAMS = new Set([
+  'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'find', 'fd', 'awk', 'jq', 'yq', 'sort', 'uniq', 'cut', 'tr', 'diff', 'cmp', 'column',
+  'xxd', 'hexdump', 'od', 'strings', 'nl', 'tac', 'rev', 'basename', 'dirname', 'realpath', 'readlink', 'du', 'df', 'ps', 'lsof',
+  'man', 'type', 'command', 'printf', 'xargs', 'sed', 'node -v', 'npm -v', 'git grep', 'git ls-files', 'git blame',
+]);
+/** For read-only commands an exit code says little (grep exits 1 on no match); only these mean the command itself broke. */
+const COMMAND_ERROR = /command not found|^\s*\S+:(?: [^:\n]+:)? (No such file or directory|Permission denied|Is a directory)|: (unrecognized|invalid|illegal) option|syntax error/im;
 /**
  * Failure-shaped output lines. Deliberately anchored: a grep or cat whose output merely
  * contains the words "error" or "failed" (e.g. source code) is not a failed command.
@@ -119,6 +131,90 @@ export function commandKey(cmd: string): string {
     s.trim().replace(/\s*(?:\d*>>?|&>)\s*(?:&\d+|\S+)/g, '').replace(/^(?:sudo|time|env)\s+/, '').replace(/^(?:\w+=\S*\s+)+/, '').replace(/\s+/g, ' ').trim(),
   ).filter(Boolean);
   return (segments.find((s) => !isTrivialCommand(s)) ?? segments[0] ?? '').slice(0, 80);
+}
+
+/**
+ * A chain's segments, one per command: split on `&&`, `||`, `;`, `|` and newlines outside quotes (a grep pattern like
+ * "a\|b" is one argument), with heredoc bodies dropped.
+ */
+export function segments(cmd: string): string[] {
+  const text = stripHeredocs(cmd);
+  const out: string[] = [];
+  let quote = '';
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === '\\' && quote === '"') i++;
+      else if (c === quote) quote = '';
+      continue;
+    }
+    if (c === '\\') { i++; continue; }
+    if (c === '"' || c === "'" || c === '`') { quote = c; continue; }
+    if (c === ';' || c === '\n' || c === '|' || (c === '&' && text[i + 1] === '&')) {
+      out.push(text.slice(start, i));
+      if ((c === '|' && text[i + 1] === '|') || c === '&') i++;
+      start = i + 1;
+    }
+  }
+  out.push(text.slice(start));
+  return out.map((x) => x.trim()).filter(Boolean);
+}
+
+/**
+ * The program words of a segment, without env assignments, flags or arguments: `npx vitest run tests/a.test.ts` ->
+ * `npx vitest run`, `grep -n "x" tests/a.test.ts` -> `grep`. Significance is judged on these, so a path or a heredoc
+ * that merely contains "test" or "build" doesn't make `grep` or `python3` look like a test run.
+ */
+export function commandHead(segment: string): string {
+  const words: string[] = [];
+  // Prefixes come in any order (`FOO=1 sudo npm test`, `sudo FOO=1 npm test`): strip until none is left.
+  let rest = segment;
+  let prev: string;
+  do {
+    prev = rest;
+    rest = rest.replace(/^(?:(?:sudo|time|env|exec|nohup)\s+|\w+=\S*\s+)/, '');
+  } while (rest !== prev);
+  for (const t of rest.split(/\s+/)) {
+    if (!t) continue;
+    if (t.startsWith('-')) {
+      if (words.length === 1 && /^(node|npm|git)$/.test(words[0]) && /^-(v|-version)$/.test(t)) words.push(t);
+      continue;
+    }
+    if (/["'`$<>=\/\\]|^\d|\.\w+$/.test(t)) break;
+    words.push(t);
+    if (words.length === 3) break;
+  }
+  return words.join(' ');
+}
+
+/** Read-only: every segment is trivial or a read/search program (`sed` only without in-place editing). */
+export function isReadOnlyCommand(cmd: string): boolean {
+  const segs = segments(cmd);
+  return segs.length > 0 && segs.every((seg) => {
+    if (isTrivialCommand(seg)) return true;
+    const head = commandHead(seg);
+    const first = head.split(' ')[0];
+    if (first === 'sed') return !/(^|\s)(-i|--in-place)/.test(seg);
+    return READ_ONLY_PROGRAMS.has(first) || READ_ONLY_PROGRAMS.has(head.split(' ').slice(0, 2).join(' '));
+  });
+}
+
+/** A test, build, install, lint or deploy run, judged on its program words. */
+export function isSignificantCommand(cmd: string): boolean {
+  return segments(cmd).some((seg) => !isTrivialCommand(seg) && SIGNIFICANT_CMD.test(commandHead(seg)));
+}
+
+/**
+ * What a hook keeps of a shell command: a failure (gotcha), a significant run (discovery), or nothing. Read-only
+ * commands (searching and printing files) are kept only when the command itself broke, since their output is code that
+ * can look like an error and their exit codes mean "no match".
+ */
+export function commandCapture(cmd: string, output: string, failed: boolean): 'gotcha' | 'discovery' | 'skip' {
+  if (!cmd.trim() || isTrivialCommand(cmd)) return 'skip';
+  if (isReadOnlyCommand(cmd)) return COMMAND_ERROR.test(output) ? 'gotcha' : 'skip';
+  if (failed) return 'gotcha';
+  return isSignificantCommand(cmd) ? 'discovery' : 'skip';
 }
 
 /** Human-readable text of a tool result: output/stdout/stderr/error fields when present, JSON otherwise. */
@@ -286,6 +382,64 @@ function closeSession(db: DB, project: ProjectInfo, sessionId: string | undefine
     refreshSessionHashes(db, sessionId, project.rootPath);
     endSession(db, sessionId, autoSummary(db, project, sessionId));
     consolidateSession(db, project, sessionId);
+    archiveStaleCandidates(db, project.id);
+    clearFileNotes(db, sessionId);
+  }
+}
+
+const FILE_TOOLS = new Set(['Read', ...EDIT_TOOLS]);
+
+/** Project files a tool call reads, edits or names on its command line. */
+function touchedFiles(db: DB, project: ProjectInfo, input: HookInput): string[] {
+  const tool = input.tool_name ?? '';
+  const ti = input.tool_input ?? {};
+  if (FILE_TOOLS.has(tool)) {
+    const rel = projectRelative(project, String(ti.file_path ?? ti.notebook_path ?? ''));
+    return rel ? [rel] : [];
+  }
+  if (tool === 'Bash') return filesInCommand(String(ti.command ?? ''), project, notedFiles(db, project.id));
+  return [];
+}
+
+/** Capture a tool call as candidate memories: one rolling record per edited file, and failed or significant commands. */
+function captureTool(db: DB, project: ProjectInfo, sessionId: string | undefined, input: HookInput): void {
+  const tool = input.tool_name ?? '';
+  if (!tool || READ_ONLY_TOOLS.has(tool) || /^mcp__.*synapse/i.test(tool)) return;
+  const ti = input.tool_input ?? {};
+  if (EDIT_TOOLS.has(tool)) {
+    const file = String(ti.file_path ?? ti.notebook_path ?? '');
+    if (!file) return;
+    const rel = relPath(project, file);
+    if (!rel) return; // scratch files, other repos, home config: not this project's history
+    const snippet = stringify(ti.new_string ?? ti.content ?? ti.new_source ?? (Array.isArray(ti.edits) ? ti.edits.map((e: { new_string?: string }) => e.new_string).join('\n') : ''), 400);
+    recordFileEdit(db, project, sessionId, rel, `${tool === 'Write' ? 'Wrote' : 'Edited'} ${rel}`, snippet ? `Latest change excerpt:\n${snippet}` : `${tool} on ${rel}`);
+    return;
+  }
+
+  if (tool === 'Bash') {
+    const cmd = String(ti.command ?? '').trim();
+    if (!cmd || isTrivialCommand(cmd)) return;
+    const out = responseText(input.tool_response, 800);
+    if (isSynapseCommand(cmd, out)) return;
+    const failed = commandFailed(input.tool_response);
+    // A pass after a failure of the same command, with edits in between, is a fix; it replaces the failure record.
+    if (!failed && sessionId && recordFix(db, project, sessionId, cmd)) return;
+    const type = commandCapture(cmd, out, failed);
+    if (type === 'skip') return;
+    const short = cmd.split('\n')[0].slice(0, 80);
+    storeObservation(db, {
+      projectId: project.id,
+      entityName: 'commands',
+      type,
+      title: `${type === 'gotcha' ? 'Command failed' : 'Ran'}: ${short}`,
+      narrative: `$ ${cmd.slice(0, 500)}\n\n${out}`,
+      concepts: [cmd.split(/\s+/)[0]],
+      sessionId,
+      source: 'hook',
+      admissionState: 'candidate',
+      valueCategory: 'ephemeral',
+      topicKey: `hook/cmd/${short}/${sessionId ?? 'nosession'}`,
+    });
   }
 }
 
@@ -327,47 +481,17 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
       return {};
     }
 
+    case 'PreToolUse': {
+      // Codex delivers PreToolUse context before the tool runs; nothing is captured until PostToolUse.
+      const note = fileNotes(db, project, sessionId, touchedFiles(db, project, input));
+      return note ? { context: note } : {};
+    }
+
     case 'PostToolUse': {
-      const tool = input.tool_name ?? '';
-      if (!tool || READ_ONLY_TOOLS.has(tool) || /^mcp__.*synapse/i.test(tool)) return {};
-      const ti = input.tool_input ?? {};
-
-      if (EDIT_TOOLS.has(tool)) {
-        const file = String(ti.file_path ?? ti.notebook_path ?? '');
-        if (!file) return {};
-        const rel = relPath(project, file);
-        if (!rel) return {}; // scratch files, other repos, home config: not this project's history
-        const snippet = stringify(ti.new_string ?? ti.content ?? ti.new_source ?? (Array.isArray(ti.edits) ? ti.edits.map((e: { new_string?: string }) => e.new_string).join('\n') : ''), 400);
-        recordFileEdit(db, project, sessionId, rel, `${tool === 'Write' ? 'Wrote' : 'Edited'} ${rel}`, snippet ? `Latest change excerpt:\n${snippet}` : `${tool} on ${rel}`);
-        return {};
-      }
-
-      if (tool === 'Bash') {
-        const cmd = String(ti.command ?? '').trim();
-        if (!cmd || isTrivialCommand(cmd)) return {};
-        const out = responseText(input.tool_response, 800);
-        if (isSynapseCommand(cmd, out)) return {};
-        const failed = commandFailed(input.tool_response);
-        const short = cmd.split('\n')[0].slice(0, 80);
-        // A pass after a failure of the same command, with edits in between, is a fix; it replaces the failure record.
-        if (!failed && sessionId && recordFix(db, project, sessionId, cmd)) return {};
-        if (!SIGNIFICANT_CMD.test(cmd) && !failed) return {};
-        const type: ObservationType = failed ? 'gotcha' : 'discovery';
-        storeObservation(db, {
-          projectId: project.id,
-          entityName: 'commands',
-          type,
-          title: `${failed ? 'Command failed' : 'Ran'}: ${short}`,
-          narrative: `$ ${cmd.slice(0, 500)}\n\n${out}`,
-          concepts: [cmd.split(/\s+/)[0]],
-          sessionId,
-          source: 'hook',
-          admissionState: 'candidate',
-          valueCategory: 'ephemeral',
-          topicKey: `hook/cmd/${short}/${sessionId ?? 'nosession'}`,
-        });
-      }
-      return {};
+      // A Read comes before an Edit (Claude Code requires it), so a note attached to the read lands before the change.
+      const note = fileNotes(db, project, sessionId, touchedFiles(db, project, input));
+      captureTool(db, project, sessionId, input);
+      return note ? { context: note } : {};
     }
 
     case 'PreCompact': {

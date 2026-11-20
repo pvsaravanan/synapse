@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type DB } from '../src/db.js';
 import { proposeLongTerm } from '../src/longterm.js';
 import { detectProject } from '../src/project.js';
-import { getObservation, storeObservation } from '../src/store.js';
+import { getObservation, listObservations, recordAccess, storeObservation } from '../src/store.js';
 import { startUi } from '../src/ui.js';
 
 let db: DB;
@@ -41,6 +41,7 @@ const api = async (p: string, post?: unknown, headers: Record<string, string> = 
   return { status: res.status, body: await res.json() as any };
 };
 const project = () => detectProject(dir);
+const listAll = () => listObservations(db, { projectId: project().id, limit: 50, status: 'all' });
 
 describe('synapse ui server', () => {
   it('serves the page on 127.0.0.1 with a strict content security policy', async () => {
@@ -147,5 +148,41 @@ describe('synapse ui server', () => {
     expect(limited).toMatchObject({ truncated: true });
     expect(limited.memories).toHaveLength(1);
     expect(ids((await api('/api/graph?project=other/repo')).body)).toEqual(['e:x', expect.stringMatching(/^m:/)]);
+  });
+
+  it('edits a memory: redacts secrets, validates the type, re-hashes new files, and can keep a candidate', async () => {
+    const cand = listAll().find((o) => o.admissionState === 'candidate')!;
+    const res = await api('/api/memory/edit', { id: cand.id, title: 'Limits are per key', narrative: 'token=ghp_abcdefghijklmnopqrstuvwxyz0123456789 in env', type: 'gotcha', entity: 'api', facts: ['Per key'], files: ['./src/limit.ts'], concepts: ['Rate'], qualify: true });
+    expect(res).toMatchObject({ status: 200, body: { ok: true } });
+    const o = getObservation(db, cand.id)!;
+    expect(o).toMatchObject({ title: 'Limits are per key', type: 'gotcha', admissionState: 'qualified', facts: ['Per key'], filesModified: ['src/limit.ts'], concepts: ['rate'], revisionCount: 2 });
+    expect(o.narrative).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz0123456789');
+    expect(Object.keys(o.fileHashes)).toEqual(['src/limit.ts']);
+    expect((await api('/api/memory/edit', { id: cand.id, type: 'nonsense' })).status).toBe(400);
+    expect((await api('/api/memory/edit', { id: cand.id, title: '  ' })).status).toBe(400);
+    expect((await api('/api/memory/edit', { id: cand.id, facts: 'not a list' })).status).toBe(400);
+    expect((await api('/api/memory/edit', { id: 99999, title: 'x' })).status).toBe(404);
+  });
+
+  it('suggests similar memories and merges duplicates into one, archiving the others', async () => {
+    const p = project();
+    const keep = listAll().find((o) => o.title === 'Rate limit is per API key')!;
+    const dup = storeObservation(db, { projectId: p.id, entityName: 'billing', type: 'decision', title: 'Rate limit applies per API key', narrative: 'Limits count requests per key, not per IP address', facts: ['Window: 60s'], filesModified: ['src/billing.ts'] }).observation;
+    recordAccess(db, [dup.id, dup.id]);
+    const similar = (await api(`/api/memory/similar?id=${keep.id}`)).body;
+    expect(similar[0]).toMatchObject({ id: dup.id, score: expect.any(Number) });
+    expect(similar.map((x: any) => x.id)).not.toContain(keep.id);
+
+    expect((await api('/api/memory/merge', { into: keep.id, from: [dup.id] })).body).toEqual({ ok: true, id: keep.id });
+    const merged = getObservation(db, keep.id)!;
+    expect(merged.narrative).toContain(`#### Merged from #${dup.id}: Rate limit applies per API key`);
+    expect(merged.filesModified.sort()).toEqual(['src/billing.ts', 'src/limit.ts']);
+    expect(merged.facts).toEqual(['Window: 60s']);
+    expect(merged.relatedEntities).toEqual(['billing']);
+    expect(getObservation(db, dup.id)).toMatchObject({ status: 'archived', supersededBy: keep.id });
+    expect(db.prepare('SELECT accessCount FROM observation_access WHERE observationId = ?').get(keep.id)).toEqual({ accessCount: 2 });
+    expect((await api('/api/memory/merge', { into: keep.id, from: [] })).status).toBe(400);
+    const other = listObservations(db, { projectId: 'other/repo', limit: 5 })[0];
+    expect((await api('/api/memory/merge', { into: keep.id, from: [other.id] })).body.error).toMatch(/another project/);
   });
 });
