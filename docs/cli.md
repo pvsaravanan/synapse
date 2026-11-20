@@ -73,6 +73,7 @@ Commands that work on memory use the project of the **current directory** (see [
 | `synapse retention [--archive]` | Show retention zones; archive expired memories |
 | `synapse ui [--port N] [--open]` | Browse and curate memory in a local web page ([details](#synapse-ui)) |
 | `synapse consolidate [--dry-run]` | Merge ended sessions' auto-captured edit records per area and command runs per session, archive older duplicate command records and stale candidates, and re-apply the current capture rules to older command records ([consolidation](concepts.md#consolidation)). Runs automatically when a session ends (except the re-filter) |
+| `synapse embed [--status \| --off]` | Turn on [meaning-based search](concepts.md#meaning-based-search-optional): downloads a ~23 MB model once and embeds this project's memories. `--status` shows the state and coverage; `--off` turns it off |
 | `synapse team status` | Whether `.synapse/memory.jsonl` holds every shared memory; changes nothing ([team memory](concepts.md#team-memory)) |
 | `synapse team export [--dry-run]` | Merge the file with this project's curated memories and write it: new memories get a stable id, removed ones become tombstones. Review and commit it |
 | `synapse team import [--dry-run]` | Load the file into the local database now (setup, session start and the MCP server also do it whenever it changed) |

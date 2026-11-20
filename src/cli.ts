@@ -49,6 +49,7 @@ Usage: synapse <command> [options]
   ui [--port N] [--open]          Browse and curate memory in a local web page
   team status|export|import [--dry-run]
                                   Share curated memories through the repo's .synapse/memory.jsonl (status checks it is current)
+  embed [--status | --off]        Turn on meaning-based search (downloads a ~23 MB model once), check it, or turn it off
   usage [--days N] [--limit N]    Which memories get read and rated helpful, and which aren't read in N days (default 30)
   consolidate [--dry-run]         Merge ended sessions' auto-captured edit and command records; archive duplicate, noise and stale candidates
   doctor                          Diagnose environment
@@ -183,8 +184,8 @@ async function main(): Promise<void> {
       break;
     }
     case 'search': {
-      const { search } = await import('./search.js');
-      const hits = search(db, {
+      const { hybridSearch } = await import('./embed.js');
+      const hits = await hybridSearch(db, {
         query: pos.join(' '),
         projectId: v.global ? undefined : project.id,
         limit: Number(str('limit') ?? 10),
@@ -349,6 +350,41 @@ async function main(): Promise<void> {
             : `${rel} is already up to date (${n(r.shared, 'shared memory', 'shared memories')}).`);
         }
       } else throw new Error('usage: synapse team status|export|import [--dry-run]');
+      break;
+    }
+    case 'embed': {
+      const e = await import('./embed.js');
+      const { memories, embedded } = e.embeddingCoverage(db, project.id);
+      if (v.off) {
+        e.setEmbedEnabled(db, false);
+        console.log('Meaning-based search is off; search is keyword-only. Stored vectors are kept ("synapse embed" turns it back on).');
+      } else if (v.status) {
+        console.log(`Meaning-based search: ${e.embedEnabled(db) ? 'on' : 'off'}${process.env.SYNAPSE_EMBED ? ' (SYNAPSE_EMBED)' : ''}`);
+        console.log(`Model: ${e.embedModel()} (${e.modelCached() ? 'downloaded' : 'not downloaded'}; ${e.modelsDir()})`);
+        console.log(`Vectors: ${embedded} of ${memories} active memories in ${project.id}`);
+      } else {
+        if (!e.modelCached()) console.log(`Downloading ${e.embedModel()} (about 23 MB, once) to ${e.modelsDir()}…`);
+        const started = Date.now();
+        let embedder;
+        try {
+          embedder = await e.getEmbedder(true);
+        } catch (err) {
+          // Networks that inspect TLS use a root certificate Node doesn't ship but the OS trusts (curl works, Node
+          // doesn't): retry once trusting the system store, as curl does.
+          const chain = (x: any): string => (x ? `${x.code ?? ''} ${x.message ?? ''} ${chain(x.cause)}` : '');
+          if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY/i.test(chain(err)) && !process.execArgv.includes('--use-system-ca')) {
+            console.log('The download hit a certificate your network uses but Node does not ship; retrying with the system certificate store…');
+            const { spawnSync } = await import('node:child_process');
+            const r = spawnSync(process.execPath, ['--use-system-ca', fileURLToPath(import.meta.url), 'embed'], { stdio: 'inherit' });
+            process.exitCode = r.status ?? 1;
+            break;
+          }
+          throw new Error(`Could not load the embedding model: ${chain(err).trim().replace(/\s+/g, ' ')}. Search stays keyword-only.`);
+        }
+        const n = await e.ensureEmbeddings(db, project.id, { embedder, status: 'all' });
+        e.setEmbedEnabled(db, true);
+        console.log(`Meaning-based search is on. Embedded ${n} memor${n === 1 ? 'y' : 'ies'} of ${project.id} in ${((Date.now() - started) / 1000).toFixed(1)}s; new and edited ones are embedded when they are next searched.`);
+      }
       break;
     }
     case 'usage': {

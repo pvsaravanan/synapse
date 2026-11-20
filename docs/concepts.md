@@ -122,6 +122,17 @@ score = 0.7 × normalizedBM25 + 0.3 × relevance
 
 Auto-captured `candidate` memories are multiplied by 0.45, so curated knowledge outranks comparable matches from logs. An empty query skips text matching and lists memories by relevance alone, which is useful for "what do we know?".
 
+### Meaning-based search (optional)
+
+Keywords miss memories worded differently: "crash" doesn't find "panics", "signed out" doesn't find "session cookie". **`synapse embed`** turns on meaning-based search with a small sentence-embedding model (`Xenova/all-MiniLM-L6-v2`, about 23 MB) that runs inside Synapse, on your machine, through [transformers.js](https://huggingface.co/docs/transformers.js).
+
+- **One download, then offline.** `synapse embed` downloads the model once into `~/.synapse/models` (from Hugging Face) and embeds the project's memories. After that, nothing goes over the network: a search never downloads, and with the model missing it simply stays keyword-only. On networks that inspect TLS with their own root certificate (curl works, Node reports `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`), it retries the download trusting the system certificate store.
+- **Blended, not replaced.** Each memory's cosine similarity to the query counts as *related* when it is at least 0.15 and at least 60% of the best match for that query (measured with this model, related pairs scored 0.19–0.48 and unrelated ones up to 0.17). Related memories gain score and join the results even without a shared word; a keyword match the model calls unrelated ("out" in "index out of range" for "signed out") keeps half its score. Exact wording still ranks first.
+- **Kept current lazily.** Vectors are stored per memory with a hash of the embedded text, and new or edited memories are embedded before the next search (up to 500 at a time).
+- **Where it applies:** `synapse_search`, `synapse search` and the search box in `synapse ui`. The session-start brief stays keyword-only, so hooks never load the model and starting a session stays fast.
+- **Optional dependency.** The runtime (`@huggingface/transformers` with ONNX Runtime, about 300 MB in `node_modules`) is an optional dependency: if it fails to install, Synapse works as before, keyword-only.
+- `synapse embed --status` shows whether it's on and how many memories have vectors; `synapse embed --off` turns it off (vectors are kept). `SYNAPSE_EMBED=1`/`0` overrides either way.
+
 ## Team memory
 
 Curated memories can be shared through the repository, so teammates and CI agents get the same gotchas and decisions through git while each machine keeps its own local database. `synapse team export` writes them to **`.synapse/memory.jsonl`**; commit it like any other file, and review it in pull requests.

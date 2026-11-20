@@ -1,6 +1,6 @@
 import type { DB } from './db.js';
 import { relevance } from './retention.js';
-import { listObservations, rowToObservation, scoringContexts } from './store.js';
+import { getObservations, listObservations, rowToObservation, scoringContexts } from './store.js';
 import type { Observation, SearchHit, SearchOptions } from './types.js';
 
 /** Small domain synonym table so "bug" also finds "fix"/"error" memories. */
@@ -62,6 +62,25 @@ const WEIGHT_LEXICAL = 0.7;
 const WEIGHT_RELEVANCE = 0.3;
 /** Auto-captured candidates are unreviewed logs; curated memories should win comparable matches. */
 const CANDIDATE_PENALTY = 0.45;
+/** Cosine similarity mapped onto 0..1 (all-MiniLM-L6-v2 scored related pairs 0.19-0.48 in testing; see embed.ts). */
+const SEMANTIC_FLOOR = 0.12;
+const SEMANTIC_SPAN = 0.3;
+/** A meaning match alone scores at most this share of a full keyword match, so exact wording still ranks first. */
+const WEIGHT_SEMANTIC = 0.85;
+
+/** A keyword match the model calls unrelated ("out" in "index out of range" for "signed out") keeps this share. */
+const UNRELATED_KEYWORD = 0.5;
+
+/**
+ * Blend a keyword match with meaning. Related (cosine at or above the cut): the keyword score is kept and meaning fills
+ * part of what is missing. Embedded but unrelated: the keyword score is reduced. Not embedded: unchanged.
+ */
+export function blendSemantic(lex: number, cosine: number | undefined, cut = 0): number {
+  if (cosine === undefined) return lex;
+  if (cosine < cut) return lex * UNRELATED_KEYWORD;
+  const s = Math.min(1, Math.max(0, (cosine - SEMANTIC_FLOOR) / SEMANTIC_SPAN));
+  return lex + (1 - lex) * WEIGHT_SEMANTIC * s;
+}
 
 export function search(db: DB, opts: SearchOptions): SearchHit[] {
   const limit = opts.limit ?? 10;
@@ -121,13 +140,25 @@ export function search(db: DB, opts: SearchOptions): SearchHit[] {
     }).map((obs) => ({ obs, lex: 0 }));
   }
 
+  // Memories related by meaning that keyword search missed join the pool (same filters), with no keyword score.
+  const sem = opts.semantic;
+  if (fts && sem) {
+    const have = new Set(rows.map((r) => r.obs.id));
+    const related = [...sem.sims].filter(([id, v]) => v >= sem.cut && !have.has(id)).map(([id]) => id);
+    const extra = getObservations(db, related).filter((o) =>
+      (!opts.projectId || o.projectId === opts.projectId) && (status === 'all' || o.status === status) && (!types?.length || types.includes(o.type))
+      && (!opts.since || (o.updatedAt ?? o.createdAt) >= opts.since) && (!opts.entityName || o.entityName === opts.entityName));
+    rows = [...rows, ...extra.map((obs) => ({ obs, lex: 0 }))];
+  }
+  if (fts && sem) rows = rows.map((r) => ({ ...r, lex: blendSemantic(r.lex, sem.sims.get(r.obs.id), sem.cut) })).filter((r) => r.lex > 0);
+
   const ctx = scoringContexts(db, rows.map((r) => r.obs.id));
   const nowDate = new Date();
   const hits: SearchHit[] = rows.map(({ obs, lex }) => {
     const rel = relevance(obs, ctx.get(obs.id), nowDate);
     let score = fts ? WEIGHT_LEXICAL * lex + WEIGHT_RELEVANCE * rel : rel;
     if (obs.admissionState === 'candidate') score *= CANDIDATE_PENALTY;
-    return { observation: obs, score, lexical: lex, relevance: rel };
+    return { observation: obs, score, lexical: lex, relevance: rel, ...(sem?.sims.has(obs.id) ? { semantic: sem.sims.get(obs.id) } : {}) };
   });
   hits.sort((a, b) => b.score - a.score);
   return hits.slice(0, limit);

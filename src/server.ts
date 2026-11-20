@@ -25,7 +25,7 @@ import {
 } from './longterm.js';
 import { archiveExpired, exportProject, retentionReport } from './maintenance.js';
 import { detectProject } from './project.js';
-import { search } from './search.js';
+import { hybridSearch } from './embed.js';
 import {
   activeSession,
   addCheckpoint,
@@ -332,7 +332,8 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     },
     async (a) => {
       const global = a.scope === 'global';
-      const hits = search(db, { ...a, projectId: global ? undefined : project.id, limit: a.limit ?? 10 });
+      // Keywords, plus meaning when embeddings are on (synapse embed); keyword-only otherwise.
+      const hits = await hybridSearch(db, { ...a, projectId: global ? undefined : project.id, limit: a.limit ?? 10 });
       if (hits.length === 0) {
         const stats = projectStats(db, global ? undefined : project.id);
         const active = stats.byStatus.active ?? 0;

@@ -132,6 +132,11 @@ export interface ProjectInfo {
   gitRemote?: string;
 }
 
+export interface SemanticScores {
+  sims: Map<number, number>;
+  cut: number;
+}
+
 export interface SearchOptions {
   query: string;
   /** Omit for global (cross-project) search. */
@@ -143,6 +148,11 @@ export interface SearchOptions {
   entityName?: string;
   /** Optional token budget for the compact index. */
   maxTokens?: number;
+  /**
+   * From embed.ts: the query's cosine similarity to each embedded memory, and the cut above which a memory counts as
+   * related. Related memories gain score (and join the results); keyword matches the model calls unrelated lose some.
+   */
+  semantic?: SemanticScores;
 }
 
 export interface SearchHit {
@@ -150,6 +160,8 @@ export interface SearchHit {
   score: number;
   lexical: number;
   relevance: number;
+  /** Cosine similarity to the query when embeddings are on. */
+  semantic?: number;
 }
 
 /** verified = checked against current code and still true (also re-records its file hashes). */

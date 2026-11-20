@@ -12,6 +12,8 @@ Synapse is configured entirely through environment variables. There is no config
 | `SYNAPSE_HOOKS` | unset | `1` tells the MCP server that hooks are installed for its agent, so the hooks deliver the brief and run the session. Setup sets it. Unset, the server does both itself; see [agents without hooks](agent-integration.md#agents-without-hooks) |
 | `SYNAPSE_HOOK_INJECT` | `full` | `full`, `minimal` or `silent`; see [Agent integration](agent-integration.md#controlling-injection). `silent` also turns off file notes |
 | `SYNAPSE_FILE_NOTES` | on | `0` stops hooks from showing the memories about a file when the agent reads or edits it ([file notes](agent-integration.md#file-notes)) |
+| `SYNAPSE_EMBED` | as set by `synapse embed` | `1` or `0` forces [meaning-based search](concepts.md#meaning-based-search-optional) on or off |
+| `SYNAPSE_EMBED_MODEL` | `Xenova/all-MiniLM-L6-v2` | Sentence-embedding model (a transformers.js feature-extraction model); run `synapse embed` after changing it |
 | `SYNAPSE_TEAM` | on | `0` stops setup, session start and the MCP server from loading the repo's `.synapse/memory.jsonl` automatically ([team memory](concepts.md#team-memory)) |
 | `SYNAPSE_CANDIDATE_DAYS` | `14` | Auto-captured candidates nobody kept, read or rated are archived after this many days; `0` turns it off ([consolidation](concepts.md#consolidation)) |
 | `SYNAPSE_DEBUG` | unset | When set, hook errors are printed to stderr |
@@ -27,7 +29,7 @@ A `.synapseignore` at the project root keeps files out of edit capture and file 
 - **One file for everything.** All projects share a single SQLite database, opened in WAL mode with a 5-second busy timeout, so the MCP server, hooks and CLI can use it at the same time.
 - **Back it up** by copying `synapse.db` while nothing is writing, or use `synapse export` per project.
 - **Search index:** FTS5, kept in sync by triggers.
-- **Local only:** nothing leaves your machine. There is no network access, telemetry or cloud sync.
+- **Local only:** nothing leaves your machine. There is no telemetry or cloud sync, and no network access, except the one-time model download when you run `synapse embed` to turn on [meaning-based search](concepts.md#meaning-based-search-optional).
 
 ## Per-project or isolated stores
 

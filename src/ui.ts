@@ -10,7 +10,7 @@ import type { DB } from './db.js';
 import { memoryDiffs } from './diff.js';
 import { changesFor, staleMemories } from './freshness.js';
 import { listLongTerm, promoteToLongTerm, reviewLongTerm, LT_KINDS, LT_SCOPES, LT_STATES } from './longterm.js';
-import { search } from './search.js';
+import { hybridSearch } from './embed.js';
 import { listCheckpoints, recentSessions, checkpointText } from './sessions.js';
 import {
   editObservation,
@@ -111,7 +111,7 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
       const sessions = Number((db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE projectId = ?').get(p) as { n: number }).n);
       return { ...stats, candidates, sessions, stale: p === project.id ? staleMemories(db, project, 500).length : null };
     },
-    '/api/memories': (u) => {
+    '/api/memories': async (u) => {
       const p = projectParam(u);
       const q = (u.searchParams.get('q') ?? '').trim();
       const status = (STATUSES as readonly string[]).includes(u.searchParams.get('status') ?? '') ? (u.searchParams.get('status') as ObservationStatus | 'all') : 'active';
@@ -122,7 +122,7 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
       const limit = Math.min(Number(u.searchParams.get('limit')) || 100, 300);
       // Fetch without the type filter so the page can show a count per type, then apply it.
       let obs = q
-        ? search(db, { query: q, projectId: p, status, limit: 300 }).map((h) => h.observation)
+        ? (await hybridSearch(db, { query: q, projectId: p, status, limit: 300 })).map((h) => h.observation)
         : listObservations(db, { projectId: p, status, limit: 1000 });
       if (source && (SOURCES as readonly string[]).includes(source)) obs = obs.filter((o) => o.source === source);
       if (admission === 'candidate' || admission === 'qualified') obs = obs.filter((o) => o.admissionState === admission);
@@ -284,7 +284,7 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
       if (req.method === 'GET' && u.pathname === '/') return send(res, 200, UI_PAGE, 'text/html; charset=utf-8');
       if (!u.pathname.startsWith('/api/')) throw new HttpError(404, 'Not found');
       if (!authorized(req.headers['x-synapse-token'] as string | undefined)) throw new HttpError(401, 'Missing or wrong token: open the URL synapse ui printed');
-      if (req.method === 'GET' && get[u.pathname]) return send(res, 200, get[u.pathname](u));
+      if (req.method === 'GET' && get[u.pathname]) return send(res, 200, await get[u.pathname](u));
       if (req.method === 'POST' && post[u.pathname]) {
         if (!String(req.headers['content-type'] ?? '').startsWith('application/json')) throw new HttpError(415, 'Send JSON');
         return send(res, 200, post[u.pathname](await body(req)));

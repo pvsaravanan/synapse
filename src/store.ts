@@ -276,6 +276,7 @@ export function promoteObservation(db: DB, id: number): boolean {
 export function deleteObservation(db: DB, id: number): boolean {
   db.prepare('DELETE FROM observation_access WHERE observationId = ?').run(id);
   db.prepare('DELETE FROM feedback WHERE observationId = ?').run(id);
+  db.prepare('DELETE FROM embeddings WHERE observationId = ?').run(id);
   return Number(db.prepare('DELETE FROM observations WHERE id = ?').run(id).changes) > 0;
 }
 

@@ -145,6 +145,14 @@ CREATE TABLE IF NOT EXISTS graph_relations (
   PRIMARY KEY (projectId, fromName, toName, relationType)
 );
 
+-- Sentence embeddings for meaning-based search (synapse embed); recomputed when a memory's text or the model changes.
+CREATE TABLE IF NOT EXISTS embeddings (
+  observationId INTEGER PRIMARY KEY,
+  model  TEXT NOT NULL,
+  hash   TEXT NOT NULL,
+  vector BLOB NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL

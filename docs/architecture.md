@@ -37,6 +37,7 @@
 | `src/maintenance.ts` | Retention report and archiving, export/import |
 | `src/agents.ts` | Per-agent hook adapters: detect the agent (incl. Devin via `DEVIN_PROJECT_DIR`), normalize Cursor, Codex and Devin payloads (including `apply_patch` parsing) and format each agent's response |
 | `src/hooks.ts` | Agent-neutral hook handling: brief injection, capture rules, failure detection, session summaries |
+| `src/embed.ts` | Optional meaning-based search: in-process sentence embeddings (transformers.js), stored vectors, hybrid search |
 | `src/team.ts` | Team memory: export to and merge from the repo's `.synapse/memory.jsonl` (stable uids, tombstones, last-writer-wins) |
 | `src/usage.ts` | Usage report: read-often, not-read-in-N-days, too-new and rated-wrong memories, for `synapse usage` and the UI |
 | `src/diff.ts` | The git diff of a flagged memory's files since it was stored (baseline found by content hash), for `synapse ui` |

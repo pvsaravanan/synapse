@@ -22,7 +22,7 @@ Rebuild after changing `src/` when testing hooks or the MCP server live, because
 - `src/setup.ts`: `synapse setup <agent>` (hooks, MCP registration, CLAUDE.md / AGENTS.md instructions); `src/doctor.ts` checks, repairs and uninstalls it
 - `src/store.ts`, `src/db.ts`: observations, upserts and duplicate merging, schema and migrations
 - `src/context.ts`: the task-lensed project brief
-- `src/search.ts`, `src/retention.ts`: FTS ranking and relevance decay
+- `src/search.ts`, `src/retention.ts`: FTS ranking and relevance decay; `src/embed.ts`: optional meaning-based search (in-process embeddings)
 - `src/longterm.ts`, `src/sessions.ts`, `src/freshness.ts`: reviewed long-term memory, sessions and checkpoints, file freshness
 - `src/ui.ts`, `src/ui-page.ts`: `synapse ui`, the local web page (server plus one self-contained HTML page)
 - `src/team.ts`: team memory shared through the repo's `.synapse/memory.jsonl`
