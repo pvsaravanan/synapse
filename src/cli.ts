@@ -47,6 +47,7 @@ Usage: synapse <command> [options]
   setup git [--dry-run]           Install a git post-commit hook that records each commit as a memory (any agent)
   instructions                    Print the memory instructions setup adds (for a global CLAUDE.md / AGENTS.md)
   ui [--port N] [--open]          Browse and curate memory in a local web page
+  usage [--days N] [--limit N]    Which memories get read and rated helpful, and which aren't read in N days (default 30)
   consolidate [--dry-run]         Merge ended sessions' auto-captured edit and command records; archive duplicate, noise and stale candidates
   doctor                          Diagnose environment
   doctor agents [--agent A] [--global] [--fix]
@@ -319,6 +320,26 @@ async function main(): Promise<void> {
       const rep = m.retentionReport(db, project.id);
       console.log(`Zones: active ${rep.zones.active}, stale ${rep.zones.stale}, archive-candidate ${rep.zones['archive-candidate']}`);
       if (v.archive) console.log(`Archived ${m.archiveExpired(db, project.id).length}.`);
+      break;
+    }
+    case 'usage': {
+      const { suggestedKind, usageReport } = await import('./usage.js');
+      const days = Number(str('days') ?? 30) || 30;
+      const r = usageReport(db, project.id, { days, limit: Number(str('limit') ?? 10) || 10 });
+      const t = r.totals;
+      const ago = (iso?: string) => (iso ? `${Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 86_400_000))}d ago` : 'never');
+      const line = (u: (typeof r.often)[number]) =>
+        `  #${u.observation.id} ${u.observation.title.slice(0, 70)}  (${u.reads} read${u.reads === 1 ? '' : 's'}, last ${ago(u.lastRead)}${u.helpful ? `, ${u.helpful} helpful` : ''}${u.negative ? `, ${u.negative} negative` : ''}${u.longTerm ? `, LT${u.longTerm.id} ${u.longTerm.state}` : ''})`;
+      console.log(`Usage of ${t.curated} curated memories in ${project.id} (reads = briefs, synapse_detail and file notes)`);
+      console.log(`Read in the last ${days} days: ${t.readInWindow}. Not read in ${days} days: ${t.notRead}. Too new to judge: ${t.notReadYet}. Rated helpful: ${t.helpful}.`);
+      const section = (title: string, rows: typeof r.often, hint: string) => {
+        if (!rows.length) return;
+        console.log(`\n${title}  ${hint}`);
+        rows.forEach((u) => console.log(line(u) + (u.promote ? `  -> synapse lt promote ${u.observation.id} --kind ${suggestedKind(u.observation.type)}` : '')));
+      };
+      section('Read often', r.often, '(promote what every session needs; proposals wait for your approval)');
+      section(`Not read in ${days} days`, r.notRead, '(archive or resolve what no longer earns its place)');
+      section('Rated wrong', r.ratedWrong, '(fix or resolve)');
       break;
     }
     case 'stats':

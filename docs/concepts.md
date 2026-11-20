@@ -122,6 +122,17 @@ score = 0.7 × normalizedBM25 + 0.3 × relevance
 
 Auto-captured `candidate` memories are multiplied by 0.45, so curated knowledge outranks comparable matches from logs. An empty query skips text matching and lists memories by relevance alone, which is useful for "what do we know?".
 
+## Usage
+
+A **read** is a memory reaching an agent: included in a brief, opened with `synapse_detail`, or shown as a [file note](agent-integration.md#file-notes). Browsing in `synapse ui` doesn't count. Synapse keeps each memory's total reads and the time of its last read, plus its feedback, and `synapse usage` (or the **Usage** view in `synapse ui`) turns that into what to keep:
+
+- **Read often:** curated memories by reads plus two per helpful rating. The ones with at least 3 reads and at least half the top memory's count, or a helpful rating, and no negative one, are suggested for [long-term memory](#reviewed-long-term-memory). Memories in the brief are read every session, so a fixed bar would mark nearly all of them.
+- **Not read in N days:** stored before the window (default 30 days) and not read in it, never-read first. Archive what no longer earns its place, or resolve what stopped being true.
+- **Too new to judge:** stored inside the window and never read yet.
+- **Rated wrong:** still active, but rated conflicted, corrected or outdated.
+
+Only the last read's time is kept, so "read often" counts all reads ever, shown with when the last one was. Auto-captured candidates are left out; they have their own lifecycle ([consolidation](#consolidation)).
+
 ## Retention and relevance
 
 Every memory has a relevance score that decays over time:

@@ -28,7 +28,7 @@ Full documentation: [docs/](docs/README.md) — [getting started](docs/getting-s
   - detect fixes (a command that fails, then passes after edits) as draft memories, and remind the agent once per session to store what it learned
   - auto-summarize the session at end
 - **File freshness:** a memory whose files changed since it was stored is flagged `changed since: …` in search and briefs, until it's verified or resolved.
-- **Local web UI** (`synapse ui`): browse, search and curate memory, edit and merge memories, explore it as a node map of memories, components and files, check "changed since" flags against the git diff of what changed, qualify candidates and review long-term proposals.
+- **Local web UI** (`synapse ui`): browse, search and curate memory, edit and merge memories, see which memories get read (and promote them) or go unread (and prune them), explore it as a node map of memories, components and files, check "changed since" flags against the git diff of what changed, qualify candidates and review long-term proposals.
 - **Reviewed long-term memory:** facts, procedures and events approved with a recorded reason. Only approved items reach the brief, and `user`-scope items carry across projects.
 - **Secret redaction** before every write
 - **No native dependencies:** uses Node's built-in `node:sqlite`

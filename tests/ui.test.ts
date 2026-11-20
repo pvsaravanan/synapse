@@ -195,4 +195,19 @@ describe('synapse ui server', () => {
     expect((await api(`/api/memory/diff?id=${other.id}`)).body).toEqual({ files: [], note: expect.stringMatching(/only available for/) });
     expect((await api('/api/memory/diff?id=99999')).status).toBe(404);
   });
+
+  it('reports usage and proposes a read-often memory for long-term memory', async () => {
+    const keep = listAll().find((o) => o.title === 'Rate limit is per API key')!;
+    recordAccess(db, [keep.id, keep.id, keep.id]);
+    const u = (await api('/api/usage?days=7')).body;
+    expect(u).toMatchObject({ days: 7, totals: { curated: 1, readInWindow: 1, notRead: 0 } });
+    expect(u.often[0]).toMatchObject({ id: keep.id, reads: 3, promote: true, kind: 'semantic', longTerm: null });
+    expect((await api('/api/usage?days=12345')).body.days).toBe(30); // unknown windows fall back to 30
+
+    const p = (await api('/api/memory/promote', { id: keep.id })).body;
+    expect(p).toMatchObject({ ok: true, state: 'proposed', action: 'proposed' });
+    expect((await api('/api/memory/promote', { id: keep.id })).body.action).toBe('exists');
+    expect((await api('/api/usage')).body.often[0]).toMatchObject({ longTerm: { id: p.id, state: 'proposed' }, promote: false });
+    expect((await api('/api/memory/promote', { id: keep.id, kind: 'nope' })).status).toBe(400);
+  });
 });

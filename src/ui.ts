@@ -9,7 +9,7 @@ import { VERSION } from './config.js';
 import type { DB } from './db.js';
 import { memoryDiffs } from './diff.js';
 import { changesFor, staleMemories } from './freshness.js';
-import { listLongTerm, reviewLongTerm, LT_STATES } from './longterm.js';
+import { listLongTerm, promoteToLongTerm, reviewLongTerm, LT_KINDS, LT_SCOPES, LT_STATES } from './longterm.js';
 import { search } from './search.js';
 import { listCheckpoints, recentSessions, checkpointText } from './sessions.js';
 import {
@@ -27,6 +27,7 @@ import {
 import { OBSERVATION_TYPES, type Observation, type ObservationStatus, type ProjectInfo } from './types.js';
 import { buildMemoryGraph } from './ui-graph.js';
 import { UI_PAGE } from './ui-page.js';
+import { suggestedKind, usageReport, type MemoryUsage } from './usage.js';
 
 export interface UiOptions {
   db: DB;
@@ -186,6 +187,13 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
       const verified = db.prepare("SELECT MAX(createdAt) AS at FROM feedback WHERE observationId = ? AND signal = 'verified'").get(o.id) as { at: string | null };
       return { files: memoryDiffs(project.rootPath, o, verified.at ?? undefined) };
     },
+    '/api/usage': (u) => {
+      const days = [7, 30, 90].includes(Number(u.searchParams.get('days'))) ? Number(u.searchParams.get('days')) : 30;
+      const r = usageReport(db, projectParam(u), { days });
+      const row = (x: MemoryUsage) => ({ ...summary(x.observation), reads: x.reads, lastRead: x.lastRead ?? null, helpful: x.helpful, negative: x.negative,
+        ageDays: x.ageDays, longTerm: x.longTerm ?? null, promote: x.promote, kind: suggestedKind(x.observation.type) });
+      return { days: r.days, totals: r.totals, often: r.often.map(row), notRead: r.notRead.map(row), notReadYet: r.notReadYet.map(row), ratedWrong: r.ratedWrong.map(row) };
+    },
     '/api/memory/similar': (u) => similarObservations(db, int(u.searchParams.get('id'), 'id')).map((x) => ({ ...summary(x.observation), score: Math.round(x.score * 100) / 100 })),
     '/api/longterm': (u) => {
       const state = u.searchParams.get('state') ?? 'proposed';
@@ -215,6 +223,16 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
       } catch (e) {
         throw new HttpError(400, (e as Error).message);
       }
+    },
+    '/api/memory/promote': (b) => {
+      const o = getObservation(db, int(b.id, 'id'));
+      if (!o) throw new HttpError(404, 'Memory not found');
+      const kind = String(b.kind ?? suggestedKind(o.type));
+      const scope = String(b.scope ?? 'project');
+      if (!(LT_KINDS as readonly string[]).includes(kind)) throw new HttpError(400, `kind must be one of ${LT_KINDS.join(', ')}`);
+      if (!(LT_SCOPES as readonly string[]).includes(scope)) throw new HttpError(400, `scope must be one of ${LT_SCOPES.join(', ')}`);
+      const r = promoteToLongTerm(db, o.projectId, o.id, { kind: kind as never, scope: scope as never, proposedBy: 'synapse ui' });
+      return { ok: true, id: r.item.id, state: r.item.state, action: r.action };
     },
     '/api/memory/merge': (b) => {
       const from = Array.isArray(b.from) ? b.from.map((x) => int(x, 'from')) : [];

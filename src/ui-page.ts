@@ -186,6 +186,23 @@ textarea.mono { font-family: var(--mono); font-size: 12.5px; }
 .mergelist .row { grid-template-columns: auto minmax(0, 1fr); }
 .mergelist .row .meta { grid-column: 2; }
 .dactions .spacer { flex: 1; }
+/* Usage view */
+.ustats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0 0 22px; }
+.ustat { background: var(--panel); border: 1.5px solid var(--line); border-radius: 18px; padding: 12px 16px; }
+.ustat .num { font-family: var(--serif); font-size: 34px; line-height: 1.1; font-variant-numeric: lining-nums tabular-nums; }
+.ustat .label { font-size: 13px; color: var(--muted); }
+.usec { margin: 0 0 26px; }
+.ushead { display: flex; align-items: baseline; gap: 4px 12px; flex-wrap: wrap; margin: 0 0 10px; }
+.ushead h3 { font-family: var(--serif); font-weight: 400; font-size: 24px; margin: 0; }
+.ushead .small { flex: 1 1 260px; }
+.urow { grid-template-columns: minmax(0, 1fr) auto; }
+.urow .meta { grid-column: 1; }
+.uact { display: flex; gap: 6px; align-self: center; grid-column: 2; grid-row: 1 / span 2; flex-wrap: wrap; justify-content: flex-end; }
+.ubar { display: inline-block; width: 64px; height: 6px; background: var(--pill); border-radius: 3px; overflow: hidden; }
+.ubar > span { display: block; height: 100%; background: var(--green); border-radius: 3px; }
+.ureads { font-variant-numeric: tabular-nums; }
+details.unew > summary { cursor: pointer; color: var(--muted); font-size: 14px; margin-bottom: 10px; }
+@media (max-width: 820px) { .ustats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .urow { grid-template-columns: minmax(0, 1fr); } .uact { grid-column: 1; grid-row: auto; justify-content: flex-start; } }
 /* Diffs of a flagged memory's files since it was stored */
 .fdiff { border: 1.5px solid var(--line); border-radius: 14px; margin-bottom: 10px; overflow: hidden; background: var(--panel); }
 .fdiff > summary { cursor: pointer; padding: 9px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; list-style: none; }
@@ -518,8 +535,8 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
   }
 
   const S = { meta: null, stats: null, project: '', view: 'memories', q: '', type: '', status: 'active', source: '', curated: true,
-    ltState: 'proposed', selected: null, items: [], picked: new Set(), seq: 0, current: null, editing: null };
-  const VIEWS = [['memories', 'Memories'], ['graph', 'Graph'], ['changed', 'Changed'], ['candidates', 'Candidates'], ['sessions', 'Sessions'], ['longterm', 'Long-term']];
+    ltState: 'proposed', usageDays: 30, selected: null, items: [], picked: new Set(), seq: 0, current: null, editing: null };
+  const VIEWS = [['memories', 'Memories'], ['graph', 'Graph'], ['changed', 'Changed'], ['candidates', 'Candidates'], ['usage', 'Usage'], ['sessions', 'Sessions'], ['longterm', 'Long-term']];
   const LIST_VIEWS = ['memories', 'changed', 'candidates'];
 
   function go(view, opts) {
@@ -681,6 +698,56 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
     const results = $('results');
     results.classList.remove('loading');
     fill(results, res.items.length ? h('div', { class: 'list' }, rowsByDay(res.items, { bulk: S.view === 'candidates' })) : h('p', { class: 'small' }, S.q ? 'No matches.' : 'Nothing here.'));
+  }
+
+  // Which memories actually help: read often (promote), not read in N days (prune), rated wrong (fix).
+  async function loadUsage() {
+    const r = await api('/api/usage', { project: S.project, days: S.usageDays });
+    S.items = [];
+    const t = r.totals, days = r.days;
+    const act = (label, cls, title, run) => h('button', { class: 'btn small' + (cls ? ' ' + cls : ''), title, onclick: async (e) => {
+      e.stopPropagation();
+      try { const msg = await run(); toast(msg); await Promise.all([load(), loadStats()]); } catch (err) { toast(err.message); }
+    } }, label);
+    const status = (u, to, label, cls) => act(label, cls, label + ' #' + u.id, async () => { await api('/api/memory/status', null, { id: u.id, status: to }); return label + 'd #' + u.id; });
+    const promote = (u) => u.longTerm
+      ? h('span', { class: 'flag ok', title: 'Long-term item made from this memory' }, 'LT' + u.longTerm.id + ' ' + u.longTerm.state)
+      : act('Propose for long-term', u.promote ? 'primary' : '', 'Propose it as long-term ' + u.kind + ' memory; approve it in Long-term', async () => {
+          const res = await api('/api/memory/promote', null, { id: u.id, kind: u.kind });
+          return (res.action === 'exists' ? 'Already proposed as LT' : 'Proposed as LT') + res.id + '. Approve it in Long-term';
+        });
+    const max = Math.max(1, ...r.often.map((u) => u.reads));
+    const readsTag = (u) => h('span', { class: 'ureads' }, plural(u.reads, 'read', 'reads') + (u.lastRead ? ', last ' + when(u.lastRead) : ''));
+    const rating = (u) => [u.helpful ? h('span', { class: 'flag ok' }, plural(u.helpful, 'helpful rating', 'helpful ratings')) : null,
+      u.negative ? h('span', { class: 'flag warn' }, plural(u.negative, 'negative rating', 'negative ratings')) : null];
+    const row = (u, extra, actions) => h('div', { class: 'row urow' + (S.selected === u.id ? ' sel' : ''), 'data-id': u.id, tabindex: 0, role: 'button',
+      onclick: () => select(u.id), onkeydown: (e) => { if (e.key === 'Enter') select(u.id); } },
+      h('span', { class: 'title' }, prettyTitle(u.title)),
+      h('span', { class: 'uact' }, ...actions),
+      h('div', { class: 'meta' }, typeTag(u.type), h('span', {}, u.entity), h('span', { class: 'mono' }, '#' + u.id), ...extra));
+    const section = (title, hint, items, empty) => h('section', { class: 'usec' },
+      h('div', { class: 'ushead' }, h('h3', {}, title), h('span', { class: 'small' }, hint)),
+      items.length ? h('div', { class: 'list' }, ...items) : h('p', { class: 'small' }, empty));
+    const stat = (n, label) => h('div', { class: 'ustat' }, h('div', { class: 'num' }, String(n)), h('div', { class: 'label' }, label));
+
+    fill($('main'),
+      h('div', { class: 'toolbar' },
+        h('select', { 'aria-label': 'Window', onchange: (e) => { S.usageDays = Number(e.target.value); load(); } },
+          ...[7, 30, 90].map((d) => h('option', { value: d, selected: d === days }, 'Last ' + d + ' days')))),
+      h('p', { class: 'hint' }, 'A read is a memory reaching an agent: in a brief, through synapse_detail, or as a file note. Browsing here does not count. Curated memories only.'),
+      h('div', { class: 'ustats' }, stat(t.curated, 'curated memories'), stat(t.readInWindow, 'read in the last ' + days + ' days'),
+        stat(t.notRead, 'not read in ' + days + ' days'), stat(t.helpful, 'rated helpful')),
+      section('Read often', 'Promote the ones every session needs: approved long-term memory reaches every brief.',
+        r.often.map((u) => row(u, [h('span', { class: 'ubar', 'aria-hidden': 'true' }, h('span', { style: 'width: ' + Math.round((u.reads / max) * 100) + '%' })), readsTag(u), ...rating(u)], [promote(u)])),
+        'No memory has reached an agent yet.'),
+      section('Not read in ' + days + ' days', 'Stored before the window and not read in it. Archive what no longer earns its place, or resolve what stopped being true.',
+        r.notRead.map((u) => row(u, [h('span', {}, u.reads ? 'last read ' + when(u.lastRead) : 'never read'), h('span', {}, 'stored ' + plural(u.ageDays, 'day', 'days') + ' ago'), ...rating(u)],
+          [status(u, 'resolved', 'Resolve'), status(u, 'archived', 'Archive', 'danger')])),
+        t.curated ? 'Every memory stored before the window was read in it.' : 'No curated memories yet.'),
+      r.ratedWrong.length ? section('Rated wrong', 'Still active but rated conflicted, corrected or outdated. Fix the text or resolve it.',
+        r.ratedWrong.map((u) => row(u, [readsTag(u), ...rating(u)], [status(u, 'resolved', 'Resolve')])), '') : null,
+      r.notReadYet.length ? h('details', { class: 'unew' }, h('summary', {}, plural(t.notReadYet, 'memory', 'memories') + ' stored in the last ' + days + ' days and not read yet: too new to judge'),
+        h('div', { class: 'list' }, ...r.notReadYet.map((u) => row(u, [h('span', {}, 'stored ' + (u.ageDays ? plural(u.ageDays, 'day', 'days') + ' ago' : 'today'))], [])))) : null);
   }
 
   async function loadSessions() {
@@ -1400,6 +1467,7 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
         await loadMemories({ changed: 1 }, (r) => r.total + ' memor' + (r.total === 1 ? 'y names' : 'ies name') + ' files edited after it was stored. Check current code, then mark each verified or outdated.');
       } else if (S.view === 'candidates') await loadMemories({ admission: 'candidate' }, (r) => plural(r.total, 'auto-captured candidate', 'auto-captured candidates') + ' · keep the useful ones, the rest rank lower');
       else if (S.view === 'graph') await loadGraph();
+      else if (S.view === 'usage') await loadUsage();
       else if (S.view === 'sessions') await loadSessions();
       else if (S.view === 'longterm') await loadLongTerm();
       renderNav();
