@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { hooksInstalled, toolMode, VERSION, type ToolMode } from './config.js';
+import { teamAutoImport } from './team.js';
 import { buildProjectContext } from './context.js';
 import { getDb, openDatabase, type DB } from './db.js';
 import { formatDetail, formatIndex, formatTimeline, indexLine } from './disclosure.js';
@@ -115,6 +116,8 @@ export function createServer(opts: ServerOptions = {}): McpServer {
   let project: ProjectInfo = opts.project ?? detectProject(process.env.SYNAPSE_PROJECT_ROOT || process.cwd());
   const mode = opts.mode ?? toolMode();
   const hooks = opts.hooks ?? hooksInstalled();
+  // Teammates' memories from the repo's .synapse/memory.jsonl, if it changed since the last load (never fatal).
+  try { teamAutoImport(db, project); } catch { /* a bad team file must not stop the server */ }
 
   // Without hooks, the server stands in for them: the brief goes into its instructions (shown at session start by
   // clients that support them) or onto the first tool result, and one session spans the server process.

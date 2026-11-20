@@ -25,6 +25,7 @@ Rebuild after changing `src/` when testing hooks or the MCP server live, because
 - `src/search.ts`, `src/retention.ts`: FTS ranking and relevance decay
 - `src/longterm.ts`, `src/sessions.ts`, `src/freshness.ts`: reviewed long-term memory, sessions and checkpoints, file freshness
 - `src/ui.ts`, `src/ui-page.ts`: `synapse ui`, the local web page (server plus one self-contained HTML page)
+- `src/team.ts`: team memory shared through the repo's `.synapse/memory.jsonl`
 - `src/consolidate.ts`, `src/ignore.ts`: merging and archiving auto-captured records when a session ends; `.synapseignore`
 - `tests/`: one file per area; tests use an in-memory database and temp directories
 

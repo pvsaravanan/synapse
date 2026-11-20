@@ -188,6 +188,9 @@ export function openDatabase(file: string = databasePath()): DB {
 function migrate(db: DB): void {
   const cols = new Set((db.prepare('PRAGMA table_info(observations)').all() as { name: string }[]).map((c) => c.name));
   if (!cols.has('fileHashes')) addColumn(db, "ALTER TABLE observations ADD COLUMN fileHashes TEXT NOT NULL DEFAULT '{}'");
+  // A stable id for memories shared through the repo's .synapse/memory.jsonl (local ids differ per machine).
+  if (!cols.has('uid')) addColumn(db, 'ALTER TABLE observations ADD COLUMN uid TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_observations_uid ON observations(uid)');
 }
 
 /** Hooks and MCP servers can open an old database at the same moment; whoever loses the race finds the column already there. */

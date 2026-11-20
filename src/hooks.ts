@@ -26,6 +26,7 @@ import { consolidateSession } from './consolidate.js';
 import { archiveStaleCandidates } from './consolidate.js';
 import { clearFileNotes, fileNotes, filesInCommand, notedFiles, projectRelative, stripHeredocs } from './file-notes.js';
 import { isIgnored } from './ignore.js';
+import { teamAutoImport } from './team.js';
 import { detectProject } from './project.js';
 import { addCheckpoint, checkpointText, endSession, getSession, latestCheckpoint, reopenSession, startSession } from './sessions.js';
 import { redactSecrets } from './secrets.js';
@@ -456,6 +457,8 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
 
   switch (event) {
     case 'SessionStart': {
+      // A pull may have brought teammates' memories: load the team file before the brief is built (never fatal).
+      try { teamAutoImport(db, project); } catch { /* a bad team file must not break the session */ }
       const mode = hookInjectMode();
       if (mode === 'silent') return {};
       const hint = 'Synapse memory is available: use synapse_search / synapse_project_context for prior decisions, gotchas and fixes; synapse_store to save durable learnings.';

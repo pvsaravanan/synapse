@@ -38,7 +38,7 @@ export interface UiOptions {
 }
 
 const STATUSES = ['active', 'resolved', 'archived', 'all'] as const;
-const SOURCES = ['agent', 'hook', 'git'] as const;
+const SOURCES = ['agent', 'hook', 'git', 'team'] as const;
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -149,7 +149,7 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
         ...summary(o, changesOf(o.projectId, [o]).get(o.id)),
         projectId: o.projectId, narrative: o.narrative, facts: o.facts, concepts: o.concepts, topicKey: o.topicKey,
         revisionCount: o.revisionCount, commitHash: o.commitHash, relatedCommits: o.relatedCommits, relatedEntities: o.relatedEntities,
-        progress: o.progress, valueCategory: o.valueCategory, access: access ?? null, feedback,
+        progress: o.progress, valueCategory: o.valueCategory, access: access ?? null, feedback, uid: o.uid ?? null,
         replacedBy: replacedBy ? { id: replacedBy.id, title: replacedBy.title } : null, replaces,
       };
     },

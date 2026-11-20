@@ -31,7 +31,7 @@ export const TYPE_LABEL: Record<ObservationType, string> = {
 };
 
 export type ObservationStatus = 'active' | 'resolved' | 'archived';
-export type ObservationSource = 'agent' | 'git' | 'manual' | 'hook';
+export type ObservationSource = 'agent' | 'git' | 'manual' | 'hook' | 'team';
 /** qualified = eligible for automatic delivery; candidate = auto-captured, searchable but down-ranked. */
 export type AdmissionState = 'candidate' | 'qualified';
 export type ValueCategory = 'core' | 'contextual' | 'ephemeral';
@@ -70,6 +70,8 @@ export interface Observation {
   hasCausalLanguage: boolean;
   /** Content hash of each named file when the memory was stored (project-relative path -> hash; '' = absent). */
   fileHashes: Record<string, string>;
+  /** Stable id once shared through the repo's team memory file. */
+  uid?: string;
 }
 
 export interface StoreInput {

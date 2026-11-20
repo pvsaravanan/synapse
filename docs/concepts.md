@@ -122,6 +122,25 @@ score = 0.7 × normalizedBM25 + 0.3 × relevance
 
 Auto-captured `candidate` memories are multiplied by 0.45, so curated knowledge outranks comparable matches from logs. An empty query skips text matching and lists memories by relevance alone, which is useful for "what do we know?".
 
+## Team memory
+
+Curated memories can be shared through the repository, so teammates and CI agents get the same gotchas and decisions through git while each machine keeps its own local database. `synapse team export` writes them to **`.synapse/memory.jsonl`**; commit it like any other file, and review it in pull requests.
+
+```
+{"uid":"m-3f9c2a7b1e04","type":"gotcha","entity":"ui","title":"UI page is a String.raw template: no backticks or ${ in page JS","narrative":"…","files":["src/ui-page.ts"],"fileHashes":{"src/ui-page.ts":"9a1c…"},"createdAt":"…","updatedAt":"…"}
+{"uid":"m-0b7d51c9a2e6","status":"resolved","title":"Old caching decision","updatedAt":"…"}
+```
+
+- **What's shared:** active, curated memories (stored by an agent or person, or candidates someone kept). Not git-ingested memories (each clone can ingest its own history), not auto-captured candidates, and not memories with the concept **`private`**. Text passes through secret redaction again, and absolute paths into the project or your home directory are rewritten (`src/…`, `~/…`), so no machine-specific paths reach the repo.
+- **One line per memory, oldest first**, so a new memory is an appended line and an edit is a one-line diff. Each line has a stable `uid` (local ids differ per machine) and the content hashes of its files, so [changed since](#file-freshness) flags work on every machine.
+- **Removals are tombstones.** A shared memory that is resolved, archived or made private becomes a short line with its `status` and title, so the removal reaches teammates explicitly. (A missing line could just mean an older branch.) Tombstones are dropped after 180 days.
+- **Merging is last-writer-wins per memory**, on `updatedAt`: importing an older file (another branch, an old commit) never undoes newer edits, and a tombstone only removes a memory that wasn't edited after it. `synapse team export` imports the file first, so a teammate's lines are never dropped, and rewrites the file only when its content changes.
+- **Loading is automatic.** Setup, every session start (before the brief) and the MCP server import the file whenever its content changed since the last load, so after a `git pull` the next session knows what the team knows. Imported memories are tagged `team`. `SYNAPSE_TEAM=0` turns automatic loading off; `synapse team import` loads on demand.
+- **A memory both of you stored** before sharing (same area, type and near-identical text) adopts the shared `uid` instead of becoming a duplicate.
+- **`synapse team status`** says whether the file is current, without changing anything: handy as a CI check before merging.
+
+The file is project knowledge, read by agents like `CLAUDE.md` is, so review changes to it the same way.
+
 ## Usage
 
 A **read** is a memory reaching an agent: included in a brief, opened with `synapse_detail`, or shown as a [file note](agent-integration.md#file-notes). Browsing in `synapse ui` doesn't count. Synapse keeps each memory's total reads and the time of its last read, plus its feedback, and `synapse usage` (or the **Usage** view in `synapse ui`) turns that into what to keep:

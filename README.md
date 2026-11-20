@@ -30,6 +30,7 @@ Full documentation: [docs/](docs/README.md) — [getting started](docs/getting-s
 - **File freshness:** a memory whose files changed since it was stored is flagged `changed since: …` in search and briefs, until it's verified or resolved.
 - **Local web UI** (`synapse ui`): browse, search and curate memory, edit and merge memories, see which memories get read (and promote them) or go unread (and prune them), explore it as a node map of memories, components and files, check "changed since" flags against the git diff of what changed, qualify candidates and review long-term proposals.
 - **Reviewed long-term memory:** facts, procedures and events approved with a recorded reason. Only approved items reach the brief, and `user`-scope items carry across projects.
+- **Team memory through git:** `synapse team export` writes curated memories to `.synapse/memory.jsonl` (reviewable, one line each); teammates and CI agents load it automatically at setup and session start.
 - **Secret redaction** before every write
 - **No native dependencies:** uses Node's built-in `node:sqlite`
 
@@ -146,6 +147,7 @@ synapse export --out mem.json && synapse import mem.json
 | `SYNAPSE_MODE` | `lite` | `full` enables graph and export tools |
 | `SYNAPSE_HOOK_INJECT` | `full` | `minimal` (one-line hint) or `silent` |
 | `SYNAPSE_FILE_NOTES` | on | `0` turns off file notes |
+| `SYNAPSE_TEAM` | on | `0` = don't load `.synapse/memory.jsonl` automatically |
 | `SYNAPSE_CANDIDATE_DAYS` | `14` | Archive unreviewed candidates after N days; `0` = never |
 | `SYNAPSE_PROJECT_ROOT` | cwd | Project root the MCP server binds to |
 | `SYNAPSE_DEBUG` | – | Print hook errors to stderr |

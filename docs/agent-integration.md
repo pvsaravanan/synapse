@@ -57,6 +57,8 @@ Devin reads any file named `agents.md` (case-insensitive) as an AGENTS.md rule f
 
 ### After setup
 
+If the repo has a [team memory](concepts.md#team-memory) file (`.synapse/memory.jsonl`), setup loads it, so a fresh clone or a CI agent starts with what the team already knows. After that, every session start loads it again whenever a pull changed it.
+
 - **Claude Code:** restart it.
 - **Cursor:** restart Cursor or reload the window. Check that Settings → Hooks and Settings → MCP list `synapse`.
 - **Codex:** start Codex and **approve the synapse hooks once in `/hooks`**, since Codex reviews hooks it didn't install itself before running them. Then start a new thread. A project's `.codex/` folder only loads when the project is trusted.

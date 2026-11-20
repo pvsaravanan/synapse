@@ -12,7 +12,7 @@ Commands that work on memory use the project of the **current directory** (see [
 |---|---|
 | `synapse serve [--mode lite\|full]` | Start the stdio MCP server |
 | `synapse hook [--agent claude\|cursor\|codex\|devin\|copilot\|gemini\|antigravity] [--event E]` | Handle one agent hook event read as JSON from stdin, and reply in that agent's format. `--event` supplies the event name for payloads that lack it (Copilot CLI, Antigravity). Always exits 0 |
-| `synapse setup <claude\|cursor\|codex\|devin> [--global] [--dry-run] [--allow-tools] [--no-instructions]` | Install hooks, register the MCP server, and add memory instructions to the project's `CLAUDE.md` / `AGENTS.md` ([details](agent-integration.md)). `--no-instructions` skips the instructions. `--allow-tools` (Devin only) pre-approves Synapse's own tools, except `synapse_lt_approve`, in your user-level Devin permissions |
+| `synapse setup <claude\|cursor\|codex\|devin> [--global] [--dry-run] [--allow-tools] [--no-instructions]` | Install hooks, register the MCP server, add memory instructions to the project's `CLAUDE.md` / `AGENTS.md` ([details](agent-integration.md)), and load the repo's [team memory](concepts.md#team-memory) if it has one. `--no-instructions` skips the instructions. `--allow-tools` (Devin only) pre-approves Synapse's own tools, except `synapse_lt_approve`, in your user-level Devin permissions |
 | `synapse setup git [--dry-run]` | Install a git `post-commit` hook that records each commit as a memory, from any agent or person ([details](agent-integration.md#git-hook-commits-from-any-agent)) |
 | `synapse instructions` | Print the memory-instructions block setup adds to `CLAUDE.md` / `AGENTS.md`, to paste into a global file or another agent's rules |
 | `synapse doctor` | Check Node, SQLite/FTS5, database path, project detection and git |
@@ -73,6 +73,9 @@ Commands that work on memory use the project of the **current directory** (see [
 | `synapse retention [--archive]` | Show retention zones; archive expired memories |
 | `synapse ui [--port N] [--open]` | Browse and curate memory in a local web page ([details](#synapse-ui)) |
 | `synapse consolidate [--dry-run]` | Merge ended sessions' auto-captured edit records per area and command runs per session, archive older duplicate command records and stale candidates, and re-apply the current capture rules to older command records ([consolidation](concepts.md#consolidation)). Runs automatically when a session ends (except the re-filter) |
+| `synapse team status` | Whether `.synapse/memory.jsonl` holds every shared memory; changes nothing ([team memory](concepts.md#team-memory)) |
+| `synapse team export [--dry-run]` | Merge the file with this project's curated memories and write it: new memories get a stable id, removed ones become tombstones. Review and commit it |
+| `synapse team import [--dry-run]` | Load the file into the local database now (setup, session start and the MCP server also do it whenever it changed) |
 | `synapse export [--out FILE]` | Write this project's observations, sessions, checkpoints and long-term items as JSON (stdout by default) |
 | `synapse import <file> [--project ID]` | Import a bundle into this project or another. Topic and duplicate rules apply, so re-importing is safe |
 

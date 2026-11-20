@@ -12,6 +12,7 @@ Synapse is configured entirely through environment variables. There is no config
 | `SYNAPSE_HOOKS` | unset | `1` tells the MCP server that hooks are installed for its agent, so the hooks deliver the brief and run the session. Setup sets it. Unset, the server does both itself; see [agents without hooks](agent-integration.md#agents-without-hooks) |
 | `SYNAPSE_HOOK_INJECT` | `full` | `full`, `minimal` or `silent`; see [Agent integration](agent-integration.md#controlling-injection). `silent` also turns off file notes |
 | `SYNAPSE_FILE_NOTES` | on | `0` stops hooks from showing the memories about a file when the agent reads or edits it ([file notes](agent-integration.md#file-notes)) |
+| `SYNAPSE_TEAM` | on | `0` stops setup, session start and the MCP server from loading the repo's `.synapse/memory.jsonl` automatically ([team memory](concepts.md#team-memory)) |
 | `SYNAPSE_CANDIDATE_DAYS` | `14` | Auto-captured candidates nobody kept, read or rated are archived after this many days; `0` turns it off ([consolidation](concepts.md#consolidation)) |
 | `SYNAPSE_DEBUG` | unset | When set, hook errors are printed to stderr |
 

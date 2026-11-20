@@ -75,6 +75,7 @@ export function rowToObservation(row: Record<string, unknown>): Observation {
     valueCategory: (row.valueCategory as Observation['valueCategory']) ?? undefined,
     hasCausalLanguage: Boolean(row.hasCausalLanguage),
     fileHashes: parseHashes(row.fileHashes),
+    uid: (row.uid as string) ?? undefined,
   };
 }
 

@@ -631,7 +631,7 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
       h('input', { type: 'search', id: 'q', placeholder: 'Search memories…', value: S.q, 'aria-label': 'Search',
         oninput: (e) => { clearTimeout(timer); timer = setTimeout(() => { S.q = e.target.value; load(true); }, 180); } }),
       sel(S.status, [['active', 'Active'], ['resolved', 'Resolved'], ['archived', 'Archived'], ['all', 'Any status']], (v) => (S.status = v), 'Status'),
-      sel(S.source, [['', 'Any source'], ['agent', 'Stored by agents'], ['hook', 'Captured by hooks'], ['git', 'From git']], (v) => (S.source = v), 'Source'),
+      sel(S.source, [['', 'Any source'], ['agent', 'Stored by agents'], ['hook', 'Captured by hooks'], ['git', 'From git'], ['team', 'From teammates']], (v) => (S.source = v), 'Source'),
       S.view === 'memories' ? h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: !S.curated,
         onchange: (e) => { S.curated = !e.target.checked; renderNav(); load(true); } }), 'Include candidates') : null);
   }
@@ -1309,11 +1309,12 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
       ['Area', m.entity], ['Status', m.status + (m.admission === 'candidate' ? ' · candidate' : '')], ['Source', m.source],
       ['Created', new Date(m.createdAt).toLocaleString()], m.updatedAt ? ['Updated', new Date(m.updatedAt).toLocaleString() + (m.revisionCount > 1 ? ' · revision ' + m.revisionCount : '')] : null,
       m.topicKey ? ['Topic', h('span', { class: 'mono' }, m.topicKey)] : null, m.sessionId ? ['Session', h('span', { class: 'mono' }, m.sessionId.slice(0, 8))] : null,
-      m.commitHash ? ['Commit', h('span', { class: 'mono' }, m.commitHash.slice(0, 10))] : null, m.access ? ['Read', plural(m.access.accessCount, 'time', 'times')] : null,
+      m.commitHash ? ['Commit', h('span', { class: 'mono' }, m.commitHash.slice(0, 10))] : null,
+      m.uid ? ['Shared', h('span', {}, 'in .synapse/memory.jsonl ', h('span', { class: 'mono' }, m.uid))] : null, m.access ? ['Read', plural(m.access.accessCount, 'time', 'times')] : null,
     ].filter(Boolean);
     const list = (title, items) => items && items.length ? h('div', { class: 'section' }, h('h3', {}, title), h('ul', {}, ...items.map((x) => h('li', {}, inline(x))))) : null;
     const flags = [m.status !== 'active' ? h('span', { class: 'flag' }, m.status) : null, m.admission === 'candidate' ? h('span', { class: 'flag' }, 'candidate') : null,
-      m.source !== 'agent' ? h('span', { class: 'flag' }, m.source === 'hook' ? 'captured by a hook' : 'from git') : null, h('span', { class: 'flag' }, m.entity)].filter(Boolean);
+      m.source !== 'agent' ? h('span', { class: 'flag' }, m.source === 'hook' ? 'captured by a hook' : m.source === 'team' ? 'from teammates' : m.source === 'git' ? 'from git' : m.source) : null, h('span', { class: 'flag' }, m.entity)].filter(Boolean);
     const copyId = h('button', { class: 'btn small idbtn mono', title: 'Copy the id', onclick: async () => {
       try { await navigator.clipboard.writeText(String(m.id)); toast('Copied #' + m.id); } catch { toast('#' + m.id); }
     } }, '#' + m.id);

@@ -47,6 +47,8 @@ Usage: synapse <command> [options]
   setup git [--dry-run]           Install a git post-commit hook that records each commit as a memory (any agent)
   instructions                    Print the memory instructions setup adds (for a global CLAUDE.md / AGENTS.md)
   ui [--port N] [--open]          Browse and curate memory in a local web page
+  team status|export|import [--dry-run]
+                                  Share curated memories through the repo's .synapse/memory.jsonl (status checks it is current)
   usage [--days N] [--limit N]    Which memories get read and rated helpful, and which aren't read in N days (default 30)
   consolidate [--dry-run]         Merge ended sessions' auto-captured edit and command records; archive duplicate, noise and stale candidates
   doctor                          Diagnose environment
@@ -322,6 +324,33 @@ async function main(): Promise<void> {
       if (v.archive) console.log(`Archived ${m.archiveExpired(db, project.id).length}.`);
       break;
     }
+    case 'team': {
+      const team = await import('./team.js');
+      const sub = pos[0] ?? 'status';
+      const dryRun = Boolean(v['dry-run']) || sub === 'status';
+      const rel = team.TEAM_FILE;
+      const n = (k: number, one: string, many = one + 's') => `${k} ${k === 1 ? one : many}`;
+      const importLine = (r: { added: number[]; updated: number[]; removed: number[] }, verb: string) =>
+        `${verb} ${n(r.added.length, 'new memory', 'new memories')}, ${n(r.updated.length, 'update')}, ${n(r.removed.length, 'removal')}`;
+      if (sub === 'import') {
+        const r = team.importTeam(db, project, { dryRun });
+        if (!r.added.length && !r.updated.length && !r.removed.length && !r.unchanged && !r.invalid) console.log(`No team memory file (${rel}) in ${project.rootPath}.`);
+        else console.log(`${importLine(r, dryRun ? 'Would import' : 'Imported')} from ${rel}${r.invalid ? ` (${n(r.invalid, 'unreadable line')} skipped)` : ''}.`);
+      } else if (sub === 'export' || sub === 'status') {
+        const r = team.exportTeam(db, project, { dryRun });
+        const pulled = r.imported.added.length + r.imported.updated.length + r.imported.removed.length;
+        if (pulled) console.log(importLine(r.imported, dryRun ? 'The file has' : 'Took in') + ' from teammates first.');
+        if (sub === 'status') {
+          console.log(`${rel}: ${n(r.shared, 'shared memory', 'shared memories')}, ${n(r.tombstones, 'removal')} recorded.`);
+          console.log(r.written ? `Out of date: ${r.newlyShared.length ? n(r.newlyShared.length, 'memory', 'memories') + ' not shared yet; ' : ''}run "synapse team export" and commit ${rel}.` : 'Up to date.');
+        } else {
+          console.log(r.written
+            ? `${dryRun ? 'Would write' : 'Wrote'} ${rel}: ${n(r.shared, 'shared memory', 'shared memories')} (${r.newlyShared.length} newly shared), ${n(r.tombstones, 'removal')}. Review and commit it.`
+            : `${rel} is already up to date (${n(r.shared, 'shared memory', 'shared memories')}).`);
+        }
+      } else throw new Error('usage: synapse team status|export|import [--dry-run]');
+      break;
+    }
     case 'usage': {
       const { suggestedKind, usageReport } = await import('./usage.js');
       const days = Number(str('days') ?? 30) || 30;
@@ -391,6 +420,16 @@ async function setup(agent: string | undefined, global: boolean, dryRun: boolean
   console.log(`synapse setup ${agent}${global ? ' --global' : ''}${dryRun ? ' (dry run)' : ''}`);
   for (const c of report.changes) console.log(`  • ${c}`);
   for (const n of report.notes) console.log(`  → ${n}`);
+  // Load the repo's shared team memory, so a fresh clone (or a CI agent) starts with what the team knows.
+  if (!global && !dryRun && agent !== 'git') {
+    try {
+      const [{ getDb }, { detectProject }, team] = await Promise.all([import('./db.js'), import('./project.js'), import('./team.js')]);
+      const r = team.teamAutoImport(getDb(), detectProject(process.cwd()));
+      if (r && (r.added.length || r.updated.length || r.removed.length)) console.log(`  • team memory: loaded ${r.added.length} new and ${r.updated.length} updated memories from ${team.TEAM_FILE}`);
+    } catch (e) {
+      console.log(`  → Could not load .synapse/memory.jsonl: ${(e as Error).message}`);
+    }
+  }
 }
 
 function setupOptions(global: boolean, dryRun = false) {
