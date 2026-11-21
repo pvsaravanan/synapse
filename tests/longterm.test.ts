@@ -146,7 +146,7 @@ describe('long-term MCP tools', () => {
   it('propose -> list -> review flow', async () => {
     const server = createServer({ db, mode: 'lite', project: { id: A, name: 'app', rootPath: process.cwd() } });
     const [x, y] = InMemoryTransport.createLinkedPair();
-    const client = new Client({ name: 'test', version: '0' });
+    const client = new Client({ name: 'claude-code', version: '0' });
     await Promise.all([server.connect(x), client.connect(y)]);
     const call = async (name: string, args: Record<string, unknown>) => {
       const r = (await client.callTool({ name, arguments: args })) as { content: { text: string }[]; isError?: boolean };
@@ -156,13 +156,13 @@ describe('long-term MCP tools', () => {
     expect(p.text).toMatch(/Proposed: \[FACT\] Webhooks need raw body .*\(LT1, proposed\)/);
     expect((await call('synapse_lt_list', {})).text).toBe('No long-term memories match.');
     expect((await call('synapse_lt_list', { state: 'proposed' })).text).toContain('LT1');
-    expect((await call('synapse_lt_approve', { id: 99, reason: 'x' })).isError).toBe(true);
-    expect((await call('synapse_lt_approve', { id: 1, reason: 'User confirmed' })).text).toContain('Approved');
+    expect((await call('synapse_lt_approve', { id: 99, title: 'x', scope: 'project', body: 'x', reason: 'x' })).isError).toBe(true);
+    expect((await call('synapse_lt_approve', { id: 1, title: 'Webhooks need raw body', scope: 'project', body: 'express.json breaks signatures', reason: 'User confirmed' })).text).toContain('Approved');
     expect((await call('synapse_lt_list', {})).text).toContain('Webhooks need raw body');
     expect((await call('synapse_lt_propose', { kind: 'semantic', fromMemoryId: 999 })).isError).toBe(true);
     // Approving a replacement retires the old item in the same call.
     await call('synapse_lt_propose', { kind: 'semantic', title: 'Webhooks need the raw body buffer', body: 'use express.raw' });
-    expect((await call('synapse_lt_approve', { id: 2, reason: 'User confirmed', supersedes: 1 })).text).toContain('LT1 superseded by LT2');
+    expect((await call('synapse_lt_approve', { id: 2, title: 'Webhooks need the raw body buffer', scope: 'project', body: 'use express.raw', reason: 'User confirmed', supersedes: 1, supersedesTitle: 'Webhooks need raw body' })).text).toContain('LT1 superseded by LT2');
     expect((await call('synapse_lt_archive', { id: 2, reason: 'obsolete' })).text).toContain('Archived');
   });
 

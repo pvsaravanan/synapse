@@ -119,7 +119,7 @@ Lite mode (default):
 | `synapse_resolve` | Mark memories done or obsolete |
 | `synapse_feedback` | helpful / verified / conflicted / outdated / corrected → adjusts ranking; `verified` clears a `changed since` flag |
 | `synapse_qualify` | Promote hook-captured candidates |
-| `synapse_lt_propose` / `synapse_lt_approve` / `synapse_lt_archive` / `synapse_lt_list` | Reviewed long-term memory. Approving always asks you, even in auto or bypass mode (Claude Code). |
+| `synapse_lt_propose` / `synapse_lt_approve` / `synapse_lt_archive` / `synapse_lt_list` | Reviewed long-term memory. Approving always asks you, even in auto or bypass mode (Claude Code), and the prompt shows the exact text. Other agents approve via `synapse lt approve` or `synapse ui` unless `SYNAPSE_AGENT_APPROVAL=1`. |
 | `synapse_session_start` / `synapse_session_end` | Session lifecycle and handoff summaries |
 | `synapse_suggest_topic_key` | A stable key for evolving topics |
 | `synapse_retention` | Memory health and archiving |
@@ -156,7 +156,7 @@ synapse export --out mem.json && synapse import mem.json
 | `SYNAPSE_PROJECT_ROOT` | cwd | Project root the MCP server binds to |
 | `SYNAPSE_DEBUG` | – | Print hook errors to stderr |
 
-**Project identity** is the normalized git remote (`owner/repo`). The same project keeps its memory across clones and protocols. Repos without a remote use `local/<name>`. Folders outside git use `dir/<name>-<hash>`.
+**Project identity** is the normalized git remote (`owner/repo`). The same project keeps its memory across clones and protocols. The first host seen for an id owns it, so `acme/app` on another host becomes `<host>/acme/app` instead of sharing memory. Repos without a remote use `local/<name>`, and a second repo with the same folder name gets `local/<name>-<hash>`. Folders outside git use `dir/<name>-<hash>`.
 
 ## Development
 

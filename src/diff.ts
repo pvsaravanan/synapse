@@ -6,11 +6,11 @@
  * committed version with that hash is the exact baseline. When none matches (the memory was stored while the file had
  * uncommitted edits), the last commit before the memory was stored or verified stands in, marked approximate.
  */
-import { spawnSync } from 'node:child_process';
+import { gitSpawn } from './gitexec.js';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { changedFiles, type FileChangeKind } from './freshness.js';
+import { changedFiles, fileKey, type FileChangeKind } from './freshness.js';
 import { isIgnored } from './ignore.js';
 import { redactSecrets } from './secrets.js';
 import type { Observation } from './types.js';
@@ -35,7 +35,7 @@ const MAX_FILES = 5;
 const MAX_LINES = 400;
 
 function git(root: string, args: string[], binary = false): { ok: boolean; out: string; buf: Buffer } {
-  const r = spawnSync('git', args, { cwd: root, maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 });
+  const r = gitSpawn(root, args);
   const buf = (r.stdout as Buffer | null) ?? Buffer.alloc(0);
   // `git diff` exits 1 when there are differences (with --exit-code or --no-index); stdout is still the diff.
   return { ok: r.status === 0 || (r.status === 1 && buf.length > 0), out: binary ? '' : buf.toString('utf8'), buf };
@@ -83,13 +83,14 @@ export function memoryDiffs(root: string, o: Observation, verifiedAt?: string): 
   const since = checkedAt(o, verifiedAt);
   return changes.map(({ file, change }): FileDiff => {
     const empty = { file, change, diff: '', truncated: false, added: 0, removed: 0 };
+    if (fileKey(root, file) !== file) return { ...empty, note: 'This path is outside the project, so it is not diffed.' };
     if (isIgnored(root, file)) return { ...empty, note: 'This file is ignored (.synapseignore or a secret-file default), so its diff is not shown.' };
     if (!inRepo) return { ...empty, note: 'The project is not a git repository, so there is no earlier version to compare with.' };
     const stored = o.fileHashes[file];
     if (!stored) {
       // The file didn't exist when the memory was stored: everything in it is new.
       const abs = path.join(root, file);
-      const raw = existsSync(abs) ? git(root, ['diff', '--no-index', '--no-color', '--no-ext-diff', '--', '/dev/null', file]).out : '';
+      const raw = existsSync(abs) ? git(root, ['diff', '--no-index', '--no-color', '--no-ext-diff', '--no-textconv', '--', '/dev/null', file]).out : '';
       return { ...empty, ...trimDiff(raw), note: 'The file did not exist when this was stored.' };
     }
     if (stored.startsWith('size:')) return { ...empty, note: 'The file is too large to track by content, so its diff is not shown.' };
@@ -97,7 +98,7 @@ export function memoryDiffs(root: string, o: Observation, verifiedAt?: string): 
     const exact = Boolean(commit);
     if (!commit) commit = git(root, ['log', '-1', '--format=%H', `--before=${since}`, '--', file]).out.trim() || undefined;
     if (!commit) return { ...empty, note: 'No committed version of this file from before the memory was stored, so there is nothing to compare with.' };
-    const raw = git(root, ['diff', '--no-color', '--no-ext-diff', '-U3', commit, '--', file]).out;
+    const raw = git(root, ['diff', '--no-color', '--no-ext-diff', '--no-textconv', '-U3', commit, '--', file]).out;
     return { ...empty, ...trimDiff(raw), baseline: { commit, ...commitInfo(root, commit), exact } };
   });
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -136,10 +136,10 @@ async function main(): Promise<void> {
   if (cmd === 'uninstall') return uninstallCmd(str('agent'), Boolean(v.global), Boolean(v['dry-run']));
   if (cmd === 'ui') {
     const { getDb } = await import('./db.js');
-    const { detectProject } = await import('./project.js');
+    const { resolveProject } = await import('./project.js');
     const { startUi } = await import('./ui.js');
     const port = str('port') ? Number(str('port')) : 0;
-    const { url } = await startUi({ db: getDb(), project: detectProject(process.cwd()), port });
+    const { url } = await startUi({ db: getDb(), project: resolveProject(getDb(), process.cwd()), port });
     console.log(`Synapse UI: ${url}`);
     console.log('Local only (127.0.0.1); the link carries this run\'s access token. Ctrl+C to stop.');
     if (v.open) {
@@ -150,9 +150,9 @@ async function main(): Promise<void> {
   }
 
   const { getDb } = await import('./db.js');
-  const { detectProject } = await import('./project.js');
+  const { resolveProject } = await import('./project.js');
   const db = getDb();
-  const project = detectProject(process.cwd());
+  const project = resolveProject(db, process.cwd());
   const store = await import('./store.js');
   const disc = await import('./disclosure.js');
 
@@ -417,8 +417,11 @@ async function main(): Promise<void> {
     case 'export': {
       const { exportProject } = await import('./maintenance.js');
       const out = JSON.stringify(exportProject(db, project.id), null, 2);
-      if (str('out')) writeFileSync(str('out')!, out);
-      else console.log(out);
+      if (str('out')) {
+        // An export is the whole memory: owner-only, like the database (mode applies only on create, so chmod too).
+        writeFileSync(str('out')!, out, { mode: 0o600 });
+        chmodSync(str('out')!, 0o600);
+      } else console.log(out);
       break;
     }
     case 'import': {
@@ -459,8 +462,8 @@ async function setup(agent: string | undefined, global: boolean, dryRun: boolean
   // Load the repo's shared team memory, so a fresh clone (or a CI agent) starts with what the team knows.
   if (!global && !dryRun && agent !== 'git') {
     try {
-      const [{ getDb }, { detectProject }, team] = await Promise.all([import('./db.js'), import('./project.js'), import('./team.js')]);
-      const r = team.teamAutoImport(getDb(), detectProject(process.cwd()));
+      const [{ getDb }, { resolveProject }, team] = await Promise.all([import('./db.js'), import('./project.js'), import('./team.js')]);
+      const r = team.teamAutoImport(getDb(), resolveProject(getDb(), process.cwd()));
       if (r && (r.added.length || r.updated.length || r.removed.length)) console.log(`  • team memory: loaded ${r.added.length} new and ${r.updated.length} updated memories from ${team.TEAM_FILE}`);
     } catch (e) {
       console.log(`  → Could not load .synapse/memory.jsonl: ${(e as Error).message}`);

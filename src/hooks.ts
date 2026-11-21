@@ -27,7 +27,7 @@ import { archiveStaleCandidates } from './consolidate.js';
 import { clearFileNotes, fileNotes, filesInCommand, notedFiles, projectRelative, stripHeredocs } from './file-notes.js';
 import { isIgnored } from './ignore.js';
 import { teamAutoImport } from './team.js';
-import { detectProject } from './project.js';
+import { resolveProject } from './project.js';
 import { addCheckpoint, checkpointText, endSession, getSession, latestCheckpoint, reopenSession, startSession } from './sessions.js';
 import { redactSecrets } from './secrets.js';
 import { listObservations, refreshSessionHashes, rowToObservation, setStatus, storeObservation } from './store.js';
@@ -446,7 +446,7 @@ function captureTool(db: DB, project: ProjectInfo, sessionId: string | undefined
 
 export function handleHook(db: DB, input: HookInput): HookOutput {
   const event = input.hook_event_name ?? '';
-  const project = detectProject(input.cwd || process.cwd());
+  const project = resolveProject(db, input.cwd || process.cwd());
   const sessionId = input.session_id;
   if (sessionId) {
     startSession(db, project.id, { id: sessionId, agent: SESSION_AGENT[input.agent ?? 'claude'] });

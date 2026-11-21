@@ -1,7 +1,7 @@
 /**
  * Git memory: turn commits into source-backed observations.
  */
-import { execFileSync } from 'node:child_process';
+import { gitText } from './gitexec.js';
 import type { DB } from './db.js';
 import { storeObservation } from './store.js';
 import type { ObservationType } from './types.js';
@@ -19,7 +19,7 @@ export interface CommitInfo {
 }
 
 function runGit(cwd: string, args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+  return gitText(cwd, args);
 }
 
 const SEP = '\u001e';

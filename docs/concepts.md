@@ -70,7 +70,7 @@ Before any write, **credentials are redacted**:
 - GitHub, OpenAI/Anthropic-style, AWS, Slack and JWT tokens
 - PEM private keys
 
-Prose such as "password must be 8 chars" is left alone.
+Redaction covers every stored text field: title, narrative, facts, concepts, related areas and the `topicKey` (hooks derive topic keys and concepts from commands, which can carry a token). Prose such as "password must be 8 chars" is left alone.
 
 ## Reading memory: progressive disclosure
 
@@ -149,6 +149,8 @@ Curated memories can be shared through the repository, so teammates and CI agent
 - **Loading is automatic.** Setup, every session start (before the brief) and the MCP server import the file whenever its content changed since the last load, so after a `git pull` the next session knows what the team knows. Imported memories are tagged `team`. `SYNAPSE_TEAM=0` turns automatic loading off; `synapse team import` loads on demand.
 - **A memory both of you stored** before sharing (same area, type and near-identical text) adopts the shared `uid` instead of becoming a duplicate.
 - **`synapse team status`** says whether the file is current, without changing anything: handy as a CI check before merging.
+
+- **The file is untrusted input.** A clone can contain anything, so imports are checked: file names must stay inside the project (no `..`, no absolute paths, nothing in `.synapseignore` or the secret-file defaults), file hashes must look like Synapse's own, and timestamps more than a day in the future are rejected (a far-future `updatedAt` would otherwise win every merge, and a tombstone could never remove it). Synapse refuses to read or write `.synapse/` or `memory.jsonl` when either is a symbolic link, and export replaces the file atomically instead of writing through it.
 
 The file is project knowledge, read by agents like `CLAUDE.md` is, so review changes to it the same way.
 
@@ -244,7 +246,7 @@ Observations are cheap and plentiful. **Long-term memory** is a small, curated l
 
 **Lifecycle.** An item starts `proposed`, from an agent (`synapse_lt_propose`), a person (`synapse lt add`), or by promoting an existing memory (`fromMemoryId` / `synapse lt promote`), in which case that memory becomes its evidence. Review moves it to `approved` or `archived`. Superseding replaces an approved item with a newer one, which keeps the history and points the old item at its replacement. Every review action needs a reason.
 
-**Who approves.** You do. Agents can propose and archive freely, but `synapse_lt_approve` is marked as requiring user interaction, so Claude Code asks you on every call in every permission mode, including accept-edits, auto and bypass. Allow rules don't skip it, and where no prompt is possible (`claude -p`) the call is denied. Other agents ask through their normal MCP permission prompt; a broad allow rule there would skip it, so Devin's `--allow-tools` leaves `synapse_lt_approve` out. From the terminal, `synapse lt approve` is the human path. The brief notes how many proposals are waiting, and `synapse lt list --state proposed` shows them.
+**Who approves.** You do. Agents can propose and archive freely, but `synapse_lt_approve` is marked as requiring user interaction, so Claude Code asks you on every call in every permission mode, including accept-edits, auto and bypass. Allow rules don't skip it, and where no prompt is possible (`claude -p`) the call is denied. Other agents ignore that marker, so `synapse_lt_approve` refuses them and points to `synapse lt approve` or `synapse ui` instead; `SYNAPSE_AGENT_APPROVAL=1` lets them approve through their own permission prompt (Devin's `--allow-tools` still leaves the tool out). Every call must repeat the item's title, scope and body, and is refused when they don't match, so the prompt shows exactly what you approve. From the terminal, `synapse lt approve` is the human path. The brief notes how many proposals are waiting, and `synapse lt list --state proposed` shows them.
 
 Proposals whose title matches a live item in the same scope return the existing item instead of creating a duplicate. Text and evidence go through secret redaction.
 

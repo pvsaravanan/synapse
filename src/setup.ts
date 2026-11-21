@@ -5,8 +5,9 @@
  * the running Node binary and CLI so they work even when the shell's default
  * `node` is too old for node:sqlite.
  */
+import { gitText } from './gitexec.js';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { AgentId } from './agents.js';
 import { detectProject } from './project.js';
@@ -60,7 +61,46 @@ export function readJson(file: string): Record<string, any> {
   }
 }
 
+const isLink = (p: string) => { try { return lstatSync(p).isSymbolicLink(); } catch { return false; } };
+const within = (child: string, parent: string) => child === parent || child.startsWith(parent + path.sep);
+const rootCache = new WeakMap<SetupOptions, string[]>();
+
+/**
+ * Why a write inside the project would leave it, or undefined when it is safe. A cloned repository can commit
+ * CLAUDE.md, an agent config file, its `.synapse-backup` sibling or a parent directory such as `.claude/` as a
+ * symlink; reading, backing up and writing through it would change a file outside the repository (a shell rc file,
+ * say). Files outside the project (user-level config) are the user's own and are not checked.
+ */
+function unsafeProjectWrite(file: string, o: SetupOptions): string | undefined {
+  if (!rootCache.has(o)) {
+    // Both spellings of the root: the path as given and its real path (on macOS /var/… is really /private/var/…).
+    const roots: string[] = [];
+    try { roots.push(path.resolve(projectRoot(o)), realpathSync(projectRoot(o))); } catch { /* not a directory */ }
+    rootCache.set(o, [...new Set(roots)]);
+  }
+  const roots = rootCache.get(o)!;
+  const real = roots[roots.length - 1];
+  if (!real) return undefined;
+  const inProject = (p: string) => roots.some((r) => within(p, r));
+  const abs = path.resolve(file);
+  let dir = path.dirname(abs);
+  while (!existsSync(dir) && path.dirname(dir) !== dir) dir = path.dirname(dir);
+  let realDir: string;
+  try { realDir = realpathSync(dir); } catch { return undefined; }
+  const realTarget = path.join(realDir, path.relative(dir, abs));
+  if (!inProject(abs) && !inProject(realTarget)) return undefined; // user-level file, not in this checkout
+  if (isLink(abs)) return `${file} is a symbolic link`;
+  if (isLink(`${abs}.synapse-backup`)) return `${file}.synapse-backup is a symbolic link`;
+  if (!within(realTarget, real)) return `${path.dirname(file)} resolves outside the project`;
+  return undefined;
+}
+
 export function writeFile(file: string, content: string, o: SetupOptions, report: SetupReport, what: string): void {
+  const unsafe = unsafeProjectWrite(file, o);
+  if (unsafe) {
+    report.notes.push(`Skipped ${what}: ${unsafe}, so writing it could change a file outside this repository. Replace it with a regular file and re-run setup.`);
+    return;
+  }
   if (existsSync(file) && readFileSync(file, 'utf8') === content) {
     report.changes.push(`${what}: already up to date (${file})`);
     return;
@@ -524,7 +564,7 @@ export function setupGit(o: SetupOptions): SetupReport {
   const root = projectRoot(o);
   let hooksDir: string;
   try {
-    hooksDir = path.resolve(root, execFileSync('git', ['rev-parse', '--git-path', 'hooks'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
+    hooksDir = path.resolve(root, gitText(root, ['rev-parse', '--git-path', 'hooks']).trim());
   } catch {
     report.notes.push(`${root} is not a git repository; nothing to install.`);
     return report;

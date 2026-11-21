@@ -3,7 +3,7 @@
  * can compare the git working tree between tool calls and attribute files that changed to the session.
  * It can't tell the agent's edits from the user's; both count as the session's.
  */
-import { execFileSync } from 'node:child_process';
+import { gitText } from './gitexec.js';
 import path from 'node:path';
 import { hashFile } from './freshness.js';
 
@@ -14,9 +14,7 @@ const MAX_DIRTY = 2000;
 export function dirtyFiles(root: string): Map<string, string> | undefined {
   let out: string;
   try {
-    out = execFileSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames'], {
-      cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
-    });
+    out = gitText(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames'], { timeout: 5000 });
   } catch {
     return undefined;
   }

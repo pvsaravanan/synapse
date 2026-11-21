@@ -17,6 +17,7 @@ import {
   LT_KINDS,
   LT_SCOPES,
   LT_STATES,
+  ltDetail,
   ltLine,
   promoteToLongTerm,
   proposeLongTerm,
@@ -24,7 +25,7 @@ import {
   supersedeLongTerm,
 } from './longterm.js';
 import { archiveExpired, exportProject, retentionReport } from './maintenance.js';
-import { detectProject } from './project.js';
+import { resolveProject } from './project.js';
 import { hybridSearch } from './embed.js';
 import {
   activeSession,
@@ -88,6 +89,22 @@ export function toolNames(mode: ToolMode = 'full'): string[] {
 /** Clients known to show MCP server instructions to the model; they get the brief there, not on the first call. */
 const CLIENTS_SHOWING_INSTRUCTIONS = new Set(['claude-code']);
 
+/**
+ * Clients known to force a user prompt for tools marked anthropic/requiresUserInteraction. Any other client may run
+ * synapse_lt_approve without asking, so the tool refuses there unless SYNAPSE_AGENT_APPROVAL opts in.
+ */
+const CLIENTS_PROMPTING_FOR_APPROVAL = new Set(['claude-code']);
+
+/** Why this client may not approve long-term memory, or undefined when it may. */
+export function approvalRefusal(client: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (CLIENTS_PROMPTING_FOR_APPROVAL.has(client)) return undefined;
+  if (/^(1|true|yes|on)$/i.test(env.SYNAPSE_AGENT_APPROVAL ?? '')) return undefined;
+  return `This agent (${client || 'unknown client'}) cannot guarantee the user sees an approval prompt, so Synapse does not let it approve long-term memory.`;
+}
+
+/** Equal after trimming and collapsing whitespace, so a re-wrapped copy of the text still matches. */
+const sameText = (a: string, b: string) => a.replace(/\s+/g, ' ').trim() === b.replace(/\s+/g, ' ').trim();
+
 const USAGE_HINT = [
   'Synapse is this project\'s memory, shared across sessions and agents. Current code and the user\'s request win over memory.',
   '- Before non-trivial work, call synapse_project_context with the task. Search before re-investigating a past bug or decision.',
@@ -113,7 +130,7 @@ export interface ServerOptions {
 
 export function createServer(opts: ServerOptions = {}): McpServer {
   const db = opts.db ?? getDb();
-  let project: ProjectInfo = opts.project ?? detectProject(process.env.SYNAPSE_PROJECT_ROOT || process.cwd());
+  let project: ProjectInfo = opts.project ?? resolveProject(db, process.env.SYNAPSE_PROJECT_ROOT || process.cwd());
   const mode = opts.mode ?? toolMode();
   const hooks = opts.hooks ?? hooksInstalled();
   // Teammates' memories from the repo's .synapse/memory.jsonl, if it changed since the last load (never fatal).
@@ -415,7 +432,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     async ({ agent, projectRoot }) => {
       if (!hooks) endOwnSession();
       if (projectRoot) {
-        project = detectProject(projectRoot);
+        project = resolveProject(db, projectRoot);
         if (!hooks) tracker = new WorktreeTracker(project.rootPath);
       }
       const s = startSession(db, project.id, { agent: agent ?? (clientName() || undefined) });
@@ -513,23 +530,43 @@ export function createServer(opts: ServerOptions = {}): McpServer {
       title: 'Approve Long-term Memory',
       description:
         'Approve a proposed long-term memory so it reaches briefs; pass `supersedes` to retire an approved item it replaces. ' +
-        'The user confirms every call in a permission prompt (Claude Code shows it in every permission mode), so call this only ' +
-        'when you want the user to decide, and put their reason in `reason`.',
+        'Repeat the item\'s exact `title`, `scope` and `body` (from synapse_lt_list) so the permission prompt shows the user what ' +
+        'they are approving; a call whose text does not match the stored item is refused. The user confirms every call in a ' +
+        'permission prompt (Claude Code shows it in every permission mode), so call this only when you want the user to decide, ' +
+        'and put their reason in `reason`. Clients that cannot guarantee that prompt are refused; the user approves with ' +
+        '`synapse lt approve <id>` or in synapse ui instead.',
       inputSchema: {
         id: z.number().int(),
+        title: z.string().describe('The item\'s title, exactly as stored'),
+        scope: z.enum(LT_SCOPES).describe('The item\'s scope: user-scope items reach briefs in every project'),
+        body: z.string().describe('The item\'s body, exactly as stored'),
         reason: z.string().min(1),
         supersedes: z.number().int().optional().describe('An approved item this one replaces'),
+        supersedesTitle: z.string().optional().describe('The replaced item\'s title, exactly as stored (required with `supersedes`)'),
       },
       // Claude Code prompts on every call to this tool in every permission mode; allow rules can't skip it.
       _meta: { [REQUIRES_USER]: true },
     },
-    async ({ id, reason, supersedes }) => {
+    async ({ id, title, scope, body, reason, supersedes, supersedesTitle }) => {
       try {
+        const refused = approvalRefusal(clientName());
+        if (refused) return fail(`${refused} Ask the user to run \`synapse lt approve ${id} --reason "..."\` or approve LT${id} in synapse ui (Long-term tab).`);
         const item = getLongTerm(db, project.id, id);
         if (!item) return fail(`Long-term item LT${id} not found`);
+        const mismatch = [
+          sameText(item.title, title) ? '' : 'title',
+          item.scope === scope ? '' : 'scope',
+          sameText(item.body, body) ? '' : 'body',
+        ].filter(Boolean);
+        if (mismatch.length) return fail(`The ${mismatch.join(', ')} given do not match LT${id}, so nothing was approved. Pass the stored text exactly:\n\n${ltDetail(item)}`);
+        if (supersedes != null) {
+          const old = getLongTerm(db, project.id, supersedes);
+          if (!old) return fail(`Long-term item LT${supersedes} not found`);
+          if (!supersedesTitle || !sameText(old.title, supersedesTitle)) return fail(`supersedesTitle must repeat LT${supersedes}'s title exactly ("${old.title}"), so nothing was approved.`);
+        }
         const approved = item.state === 'approved' ? item : reviewLongTerm(db, project.id, id, 'approve', reason);
         if (supersedes != null) supersedeLongTerm(db, project.id, supersedes, id, reason);
-        return text(`Approved: ${ltLine(approved)}${supersedes != null ? `\nLT${supersedes} superseded by LT${id}.` : ''}`);
+        return text(`Approved:\n${ltDetail(approved)}${supersedes != null ? `\n\nLT${supersedes} superseded by LT${id}.` : ''}`);
       } catch (e) {
         return fail((e as Error).message);
       }
@@ -556,7 +593,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     'synapse_lt_list',
     {
       title: 'List Long-term Memory',
-      description: 'List long-term memories visible in this project (its own plus user-scope), newest first. Filter by state or a full-text query.',
+      description: 'List long-term memories visible in this project (its own plus user-scope), newest first. Filter by state or a full-text query. Proposed items are shown in full, as synapse_lt_approve needs their exact text.',
       inputSchema: {
         state: z.enum([...LT_STATES, 'all']).optional(),
         query: z.string().optional(),
@@ -565,7 +602,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     },
     async ({ state, query, limit }) => {
       const items = listLongTerm(db, project.id, { state: state ?? 'approved', query, limit: limit ?? 20 });
-      return text(items.length ? items.map((i) => `- ${ltLine(i)}`).join('\n') : 'No long-term memories match.');
+      return text(items.length ? items.map((i) => (i.state === 'proposed' ? `- ${ltDetail(i).replace(/\n/g, '\n  ')}` : `- ${ltLine(i)}`)).join('\n') : 'No long-term memories match.');
     },
   );
 

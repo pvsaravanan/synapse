@@ -1,8 +1,8 @@
-import { mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
-import { databasePath } from './config.js';
+import { databasePath, synapseHome } from './config.js';
 
 export type DB = DatabaseSyncType;
 
@@ -153,6 +153,15 @@ CREATE TABLE IF NOT EXISTS embeddings (
   vector BLOB NOT NULL
 );
 
+-- Which checkout first claimed a project id: the git host for remote-derived ids, the root path for local/ ids.
+-- A later checkout with the same id but a different host or root gets a qualified id instead (project.ts).
+CREATE TABLE IF NOT EXISTS project_identity (
+  projectId TEXT PRIMARY KEY,
+  host      TEXT,
+  rootPath  TEXT,
+  createdAt TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -184,12 +193,37 @@ let shared: DB | null = null;
 
 export function openDatabase(file: string = databasePath()): DB {
   const { DatabaseSync } = loadSqlite();
-  if (file !== ':memory:') mkdirSync(path.dirname(file), { recursive: true });
+  if (file !== ':memory:') prepareDirectory(path.dirname(file));
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
+  if (file !== ':memory:') restrictFiles(file);
   db.exec(SCHEMA);
   migrate(db);
   return db;
+}
+
+/**
+ * The database holds captured commands, file paths and session notes, so only its owner should read it. The folder is
+ * made owner-only when Synapse creates it or it is Synapse's own home; a folder the user chose and already had (say
+ * SYNAPSE_DB in a shared directory) keeps its mode, and the files themselves are owner-only either way.
+ */
+function prepareDirectory(dir: string): void {
+  const created = !existsSync(dir);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (created || path.resolve(dir) === path.resolve(synapseHome())) bestEffortChmod(dir, 0o700);
+}
+
+function restrictFiles(file: string): void {
+  for (const f of [file, `${file}-wal`, `${file}-shm`]) if (existsSync(f)) bestEffortChmod(f, 0o600);
+}
+
+/** Permissions are hardening, not a precondition: a filesystem without POSIX modes must not stop Synapse opening. */
+function bestEffortChmod(target: string, mode: number): void {
+  try {
+    chmodSync(target, mode);
+  } catch {
+    /* ignore */
+  }
 }
 
 /** Columns added after the first release; CREATE TABLE IF NOT EXISTS leaves older databases without them. */

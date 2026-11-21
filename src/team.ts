@@ -16,11 +16,12 @@
  * absolute paths into the project or the home directory are rewritten, so no machine-specific paths reach the repo.
  */
 import { randomBytes, createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getMeta, setMeta, type DB } from './db.js';
-import { hashFiles } from './freshness.js';
+import { fileKey, hashFiles } from './freshness.js';
+import { isIgnored } from './ignore.js';
 import { redactSecrets } from './secrets.js';
 import { estimateTokens, rowToObservation, setStatus, similarity } from './store.js';
 import { OBSERVATION_TYPES, type Observation, type ProjectInfo } from './types.js';
@@ -82,8 +83,37 @@ export function teamAutoImportEnabled(): boolean {
 
 export const teamFilePath = (project: ProjectInfo) => path.join(project.rootPath, TEAM_FILE);
 
+/**
+ * The team file and its directory must be a real directory and a regular file: a repo can commit them as symlinks, and
+ * following one would read, or on export overwrite, whatever it points at (a git hook, .git/config, a home file).
+ */
+function assertNotLinked(file: string): void {
+  for (const p of [path.dirname(file), file]) {
+    let st;
+    try {
+      st = lstatSync(p);
+    } catch {
+      continue; // absent: fine, export creates it
+    }
+    if (st.isSymbolicLink()) throw new Error(`${p} is a symbolic link; Synapse refuses to read or write the team file through it.`);
+    if (p === file ? !st.isFile() : !st.isDirectory()) throw new Error(`${p} is not a regular ${p === file ? 'file' : 'directory'}.`);
+  }
+}
+
+/** Future timestamps are refused beyond this much clock skew: a far-future updatedAt would win every merge forever. */
+const MAX_CLOCK_SKEW_MS = 86_400_000;
+
+/** A parseable timestamp not in the future, normalized to ISO (so string comparison with local stamps is exact). */
+function normalizeStamp(v: unknown, now: number): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const t = Date.parse(v);
+  if (!Number.isFinite(t) || t > now + MAX_CLOCK_SKEW_MS) return undefined;
+  return new Date(t).toISOString();
+}
+
 /** Parse the team file; malformed lines are skipped (counted), so one bad merge doesn't block the rest. */
-export function readTeamFile(file: string): { entries: TeamEntry[]; invalid: number } {
+export function readTeamFile(file: string, now: Date = new Date()): { entries: TeamEntry[]; invalid: number } {
+  assertNotLinked(file);
   if (!existsSync(file)) return { entries: [], invalid: 0 };
   let invalid = 0;
   const entries: TeamEntry[] = [];
@@ -94,7 +124,9 @@ export function readTeamFile(file: string): { entries: TeamEntry[]; invalid: num
       const ok = typeof e?.uid === 'string' && /^[\w-]{6,64}$/.test(e.uid) && typeof e.updatedAt === 'string' && typeof e.title === 'string'
         && (isTombstone(e) ? ['resolved', 'archived', 'private'].includes(e.status)
           : typeof e.narrative === 'string' && (OBSERVATION_TYPES as readonly string[]).includes(e.type) && typeof e.entity === 'string' && typeof e.createdAt === 'string');
-      if (ok) entries.push(e);
+      const updatedAt = ok ? normalizeStamp(e.updatedAt, now.getTime()) : undefined;
+      const createdAt = ok && !isTombstone(e) ? normalizeStamp(e.createdAt, now.getTime()) : undefined;
+      if (ok && updatedAt && (isTombstone(e) || createdAt)) entries.push({ ...e, updatedAt, ...(createdAt ? { createdAt } : {}) } as TeamEntry);
       else invalid++;
     } catch {
       invalid++;
@@ -119,13 +151,31 @@ function lookalike(db: DB, projectId: string, e: TeamMemory): Observation | unde
   return rows.map(rowToObservation).find((o) => similarity(`${o.title} ${o.narrative}`, `${e.title} ${e.narrative}`) >= 0.82);
 }
 
+/** Content hashes as freshness.ts writes them: 12 hex chars, 'size:N' for large files, '' for an absent file. */
+const HASH_VALUE = /^([0-9a-f]{12}|size:\d+|)$/;
+const MAX_FILES = 25;
+
+/**
+ * File names from the team file are held to the project like locally stored ones (freshness.ts fileKey): no '..',
+ * no absolute paths, nothing ignored. Otherwise a committed entry could make Synapse hash, or diff in the UI, files
+ * outside the repository.
+ */
+function confineFiles(root: string, e: TeamMemory): { files: string[]; hashes: Record<string, string> } {
+  const files = [...new Set(strs(e.files).map((f) => fileKey(root, f)).filter((f): f is string => Boolean(f) && !isIgnored(root, f!)))].slice(0, MAX_FILES);
+  if (!e.fileHashes || typeof e.fileHashes !== 'object' || Array.isArray(e.fileHashes)) return { files, hashes: hashFiles(root, files) };
+  const hashes = Object.fromEntries(Object.entries(e.fileHashes)
+    .filter(([k, v]) => fileKey(root, k) === k && !isIgnored(root, k) && typeof v === 'string' && HASH_VALUE.test(v))
+    .slice(0, MAX_FILES));
+  return { files, hashes };
+}
+
 function writeEntry(db: DB, project: ProjectInfo, e: TeamMemory, id?: number): number {
   const facts = strs(e.facts).map(redactSecrets);
-  const files = strs(e.files);
-  const hashes = e.fileHashes && typeof e.fileHashes === 'object' ? e.fileHashes : hashFiles(project.rootPath, files);
+  const { files, hashes } = confineFiles(project.rootPath, e);
+  const topicKey = typeof e.topicKey === 'string' && e.topicKey ? redactSecrets(e.topicKey) : null;
   const fields = [
     e.type, redactSecrets(e.entity), redactSecrets(e.title), redactSecrets(e.narrative), JSON.stringify(facts), JSON.stringify(files),
-    JSON.stringify(strs(e.concepts)), JSON.stringify(strs(e.related)), e.topicKey ?? null, JSON.stringify(hashes),
+    JSON.stringify(strs(e.concepts).map((c) => redactSecrets(c).toLowerCase())), JSON.stringify(strs(e.related).map(redactSecrets)), topicKey, JSON.stringify(hashes),
     estimateTokens([e.title, e.narrative, ...facts].join('\n')), e.updatedAt,
   ];
   if (id !== undefined) {
@@ -236,16 +286,18 @@ function toEntry(o: Observation, root: string): TeamEntry {
     const status = o.status === 'archived' ? 'archived' : o.status === 'resolved' ? 'resolved' : 'private';
     return { uid: o.uid!, status, title: scrub(o.title, root), updatedAt: stamp(o) };
   }
+  // Every text field is scrubbed (redaction plus machine-path rewrite); files become project-relative.
   const entry: TeamMemory = {
-    uid: o.uid!, type: o.type, entity: o.entityName, title: scrub(o.title, root), narrative: scrub(o.narrative, root),
+    uid: o.uid!, type: o.type, entity: scrub(o.entityName, root), title: scrub(o.title, root), narrative: scrub(o.narrative, root),
     createdAt: o.createdAt, updatedAt: stamp(o),
   };
   if (o.facts.length) entry.facts = o.facts.map((f) => scrub(f, root));
-  if (o.filesModified.length) entry.files = o.filesModified;
-  if (o.concepts.length) entry.concepts = o.concepts;
-  if (o.relatedEntities.length) entry.related = o.relatedEntities;
-  if (o.topicKey) entry.topicKey = o.topicKey;
-  if (Object.keys(o.fileHashes).length) entry.fileHashes = Object.fromEntries(Object.entries(o.fileHashes).sort(([a], [b]) => a.localeCompare(b)));
+  if (o.filesModified.length) entry.files = [...new Set(o.filesModified.map((f) => fileKey(root, f) ?? scrub(f, root)))];
+  if (o.concepts.length) entry.concepts = o.concepts.map((c) => scrub(c, root));
+  if (o.relatedEntities.length) entry.related = o.relatedEntities.map((r) => scrub(r, root));
+  if (o.topicKey) entry.topicKey = scrub(o.topicKey, root);
+  const hashes = Object.entries(o.fileHashes).filter(([k]) => fileKey(root, k) === k);
+  if (hashes.length) entry.fileHashes = Object.fromEntries(hashes.sort(([a], [b]) => a.localeCompare(b)));
   return entry;
 }
 
@@ -258,7 +310,7 @@ const newUid = () => `m-${randomBytes(6).toString('hex')}`;
  */
 export function exportTeam(db: DB, project: ProjectInfo, opts: { dryRun?: boolean; now?: Date } = {}): TeamExport {
   const file = teamFilePath(project);
-  const { entries: before } = readTeamFile(file);
+  const { entries: before } = readTeamFile(file, opts.now); // refuses a symlinked .synapse/ or memory.jsonl
   const imported = importTeamEntries(db, project, before, opts);
   const rows = (db.prepare('SELECT * FROM observations WHERE projectId = ? ORDER BY createdAt, id').all(project.id) as Record<string, unknown>[]).map(rowToObservation);
   const newlyShared: number[] = [];
@@ -281,7 +333,16 @@ export function exportTeam(db: DB, project: ProjectInfo, opts: { dryRun?: boolea
   const written = content !== current;
   if (written && !opts.dryRun) {
     mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, content);
+    assertNotLinked(file); // again: the directory may have just been created, or swapped since the read
+    // Write a new file and rename it into place: rename replaces a path, it never writes through a link.
+    const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    try {
+      writeFileSync(tmp, content, { flag: 'wx' });
+      renameSync(tmp, file);
+    } catch (err) {
+      rmSync(tmp, { force: true });
+      throw err;
+    }
     setMeta(db, `team-file:${project.id}`, createHash('sha1').update(content).digest('hex'));
   }
   const tombstones = kept.filter(isTombstone).length;

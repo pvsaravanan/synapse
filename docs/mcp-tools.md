@@ -139,12 +139,20 @@ Creates a `proposed` long-term item. Proposals don't reach the brief until appro
 | Parameter | Type |
 |---|---|
 | `id` | number |
+| `title` | string: the item's title, exactly as stored |
+| `scope` | `project` or `user`: the item's scope |
+| `body` | string: the item's body, exactly as stored |
 | `reason` | string (required) |
 | `supersedes` | number, optional: an approved item this one replaces |
+| `supersedesTitle` | string, required with `supersedes`: the replaced item's title |
 
 Approves a proposal so it reaches the brief. With `supersedes`, it also retires the item it replaces.
 
-**You confirm every call.** The tool is marked `_meta["anthropic/requiresUserInteraction"]`, so Claude Code shows its permission prompt on every call in every permission mode (manual, accept-edits, auto and bypass), with no "don't ask again" option. Allow rules such as `mcp__synapse__*` don't skip it. Where no prompt can be shown (`claude -p`, `dontAsk` mode), the call is denied and the item stays proposed. Other agents ignore the marker and use their normal MCP permission prompt (`synapse setup devin --allow-tools` leaves this tool out of the rules it adds, so Devin keeps asking).
+**The prompt shows what you approve.** The agent must repeat the item's title, scope and body, and the call is refused (nothing approved) unless they match the stored item; whitespace differences don't count. A permission prompt shows the tool's arguments, so you see the real text and whether a `user` item will reach every project, not just an id. `synapse_lt_list` shows proposed items in full for this reason, and a refused call returns the stored text.
+
+**Only clients that force the prompt may approve.** The tool refuses unless the MCP client is Claude Code, which always shows the prompt. Other agents get a refusal pointing to `synapse lt approve <id> --reason "..."` or the Long-term tab in `synapse ui`. Set `SYNAPSE_AGENT_APPROVAL=1` in the MCP server's environment to let an agent whose permission prompt you trust approve too.
+
+**You confirm every call.** The tool is marked `_meta["anthropic/requiresUserInteraction"]`, so Claude Code shows its permission prompt on every call in every permission mode (manual, accept-edits, auto and bypass), with no "don't ask again" option. Allow rules such as `mcp__synapse__*` don't skip it. Where no prompt can be shown (`claude -p`, `dontAsk` mode), the call is denied and the item stays proposed. Other agents ignore the marker, so they are refused unless `SYNAPSE_AGENT_APPROVAL=1` is set; then their normal MCP permission prompt applies (`synapse setup devin --allow-tools` leaves this tool out of the rules it adds, so Devin keeps asking).
 
 ### `synapse_lt_archive`
 

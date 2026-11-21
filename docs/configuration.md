@@ -16,6 +16,7 @@ Synapse is configured entirely through environment variables. There is no config
 | `SYNAPSE_EMBED_MODEL` | `Xenova/all-MiniLM-L6-v2` | Sentence-embedding model (a transformers.js feature-extraction model); run `synapse embed` after changing it |
 | `SYNAPSE_TEAM` | on | `0` stops setup, session start and the MCP server from loading the repo's `.synapse/memory.jsonl` automatically ([team memory](concepts.md#team-memory)) |
 | `SYNAPSE_CANDIDATE_DAYS` | `14` | Auto-captured candidates nobody kept, read or rated are archived after this many days; `0` turns it off ([consolidation](concepts.md#consolidation)) |
+| `SYNAPSE_AGENT_APPROVAL` | unset | `1` lets agents other than Claude Code call `synapse_lt_approve`, relying on their own permission prompt. Unset, they are refused and you approve with `synapse lt approve` or `synapse ui` ([who approves](concepts.md#reviewed-long-term-memory)) |
 | `SYNAPSE_DEBUG` | unset | When set, hook errors are printed to stderr |
 
 `synapse serve --mode full` overrides `SYNAPSE_MODE`.
@@ -28,6 +29,7 @@ A `.synapseignore` at the project root keeps files out of edit capture and file 
 
 - **One file for everything.** All projects share a single SQLite database, opened in WAL mode with a 5-second busy timeout, so the MCP server, hooks and CLI can use it at the same time.
 - **Back it up** by copying `synapse.db` while nothing is writing, or use `synapse export` per project.
+- **Owner-only.** The database holds captured commands, paths and session notes, so its files (`synapse.db`, `-wal`, `-shm`) are set to `0600`, and its folder to `0700` when Synapse creates it or it is `SYNAPSE_HOME`. A folder you chose that already existed keeps its mode. `synapse export --out` writes `0600` files too.
 - **Search index:** FTS5, kept in sync by triggers.
 - **Local only:** nothing leaves your machine. There is no telemetry or cloud sync, and no network access, except the one-time model download when you run `synapse embed` to turn on [meaning-based search](concepts.md#meaning-based-search-optional).
 

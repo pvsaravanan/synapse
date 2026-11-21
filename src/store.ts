@@ -99,6 +99,8 @@ interface Sanitized {
   facts: string[];
   filesModified: string[];
   concepts: string[];
+  /** Redacted too: hook topic keys embed raw command text (`hook/cmd/<command>/<session>`). */
+  topicKey?: string;
 }
 
 function sanitize(input: StoreInput): Sanitized {
@@ -108,7 +110,8 @@ function sanitize(input: StoreInput): Sanitized {
     narrative: redactSecrets(input.narrative.trim()),
     facts: uniq(input.facts).map(redactSecrets),
     filesModified: uniq(input.filesModified),
-    concepts: uniq(input.concepts).map((c) => c.toLowerCase()),
+    concepts: uniq(input.concepts).map((c) => redactSecrets(c).toLowerCase()),
+    topicKey: input.topicKey ? redactSecrets(input.topicKey) : undefined,
   };
 }
 
@@ -183,10 +186,10 @@ function storeObservationInner(db: DB, input: StoreInput): StoreResult {
   const hashes = input.rootPath ? hashFiles(input.rootPath, s.filesModified) : {};
   const mergeHashes = (prev: FileHashes) => JSON.stringify({ ...prev, ...hashes });
 
-  if (input.topicKey) {
+  if (s.topicKey) {
     const existing = db
       .prepare("SELECT * FROM observations WHERE projectId = ? AND topicKey = ? AND status = 'active' ORDER BY id DESC LIMIT 1")
-      .get(input.projectId, input.topicKey) as Record<string, unknown> | undefined;
+      .get(input.projectId, s.topicKey) as Record<string, unknown> | undefined;
     if (existing) {
       const prev = rowToObservation(existing);
       db.prepare(
@@ -207,7 +210,7 @@ function storeObservationInner(db: DB, input: StoreInput): StoreResult {
     }
   }
 
-  if (!input.topicKey) {
+  if (!s.topicKey) {
     const candidates = db
       .prepare(
         "SELECT * FROM observations WHERE projectId = ? AND entityName = ? AND type = ? AND status = 'active' ORDER BY id DESC LIMIT 50",
@@ -249,7 +252,7 @@ function storeObservationInner(db: DB, input: StoreInput): StoreResult {
     .run(
       input.projectId, s.entityName, input.type, s.title, s.narrative,
       JSON.stringify(s.facts), JSON.stringify(s.filesModified), JSON.stringify(s.concepts), tokens,
-      ts, input.topicKey ?? null, input.sessionId ?? null,
+      ts, s.topicKey ?? null, input.sessionId ?? null,
       input.progress ? JSON.stringify(input.progress) : null,
       input.source ?? 'agent', input.commitHash ?? null,
       JSON.stringify(uniq(input.relatedCommits)), JSON.stringify(uniq(input.relatedEntities)),

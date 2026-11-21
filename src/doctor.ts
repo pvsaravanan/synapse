@@ -3,6 +3,7 @@
  * hook) and repairs it with --fix; `synapse uninstall` removes it. Both read the same locations setup writes.
  */
 import { execFileSync } from 'node:child_process';
+import { gitText } from './gitexec.js';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { AGENTS, type AgentId } from './agents.js';
@@ -278,7 +279,7 @@ function checkInstructions(agent: AgentId, o: SetupOptions): Check {
 function gitHookFile(o: SetupOptions): string | undefined {
   const root = projectRoot(o);
   try {
-    return path.join(path.resolve(root, execFileSync('git', ['rev-parse', '--git-path', 'hooks'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()), 'post-commit');
+    return path.join(path.resolve(root, gitText(root, ['rev-parse', '--git-path', 'hooks']).trim()), 'post-commit');
   } catch {
     return undefined;
   }

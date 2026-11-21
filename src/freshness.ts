@@ -63,6 +63,7 @@ export function hashFiles(root: string, files: string[]): FileHashes {
 export function changedFiles(root: string, hashes: FileHashes, cache: Map<string, string> = new Map()): FileChange[] {
   const out: FileChange[] = [];
   for (const [file, then] of Object.entries(hashes)) {
+    if (fileKey(root, file) !== file) continue; // never look outside the project, whatever a stored key says
     let current = cache.get(file);
     if (current === undefined) {
       current = hashFile(path.join(root, file));
