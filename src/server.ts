@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { hooksInstalled, toolMode, VERSION, type ToolMode } from './config.js';
 import { teamAutoImport } from './team.js';
 import { refreshBranches, visibleBranch } from './branch.js';
+import { search } from './search.js';
 import { buildProjectContext, recordBrief } from './context.js';
 import { formatHistory, formatVersion, memoryHistory, versionAt } from './history.js';
 import { pruneDeliveries, recordDeliveries, revisionOf } from './deliveries.js';
@@ -108,9 +109,12 @@ export function approvalRefusal(client: string, env: NodeJS.ProcessEnv = process
 /** Equal after trimming and collapsing whitespace, so a re-wrapped copy of the text still matches. */
 const sameText = (a: string, b: string) => a.replace(/\s+/g, ' ').trim() === b.replace(/\s+/g, ' ').trim();
 
-/** After a store on a feature branch: say where the memory lives. */
-const branchNote = (o: { branch?: string }) =>
-  o.branch ? `\nOn branch ${o.branch}: shown on this branch only, project-wide once it merges (scope "project" makes it project-wide now).` : '';
+/** After a store on a feature branch: say where the memory lives, and why. */
+const branchNote = (r: { observation: { branch?: string }; scopeReason?: string }) => {
+  const why = r.scopeReason ? ` because ${r.scopeReason}` : '';
+  if (r.observation.branch) return `\nOn branch ${r.observation.branch}${why}: shown on this branch only, project-wide once it merges (scope "project" makes it project-wide now).`;
+  return r.scopeReason ? `\nProject-wide${why} (scope "branch" keeps it on this branch).` : '';
+};
 
 const USAGE_HINT = [
   'Synapse is this project\'s memory, shared across sessions and agents. Current code and the user\'s request win over memory.',
@@ -228,6 +232,14 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     pruneDeliveries(db);
   };
   const sessionId = () => (!hooks && ownSession ? ownSession : activeSession(db, project.id)?.id);
+  /** A footer naming matches scoped to other branches (keyword search, so it stays cheap), or ''. */
+  const otherBranchMatches = (query: string, current: string | null): string => {
+    if (!query.trim()) return '';
+    const others = search(db, { query, projectId: project.id, limit: 20 }).map((h) => h.observation).filter((o) => o.branch && o.branch !== current);
+    if (!others.length) return '';
+    const names = [...new Set(others.map((o) => o.branch!))];
+    return `\n${others.length} more match on other branches (${names.slice(0, 3).join(', ')}${names.length > 3 ? ', …' : ''}), not shown: pass branches "all" to include them.`;
+  };
 
   const names: string[] = [];
   const register = server.registerTool.bind(server) as (...args: unknown[]) => unknown;
@@ -301,13 +313,13 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         relatedCommits: z.array(z.string()).optional(),
         relatedEntities: z.array(z.string()).optional(),
         scope: z.enum(['branch', 'project']).optional()
-          .describe('On a feature branch, memories stay on it until it merges (default). "project" for what holds on every branch: tooling, environment, how main works'),
+          .describe('On a feature branch, Synapse keeps a memory about the branch\'s own changes on it until it merges and makes the rest project-wide (decided from files, names and session edits). "project" or "branch" to choose'),
       },
     },
     async (args) => {
       const r = storeObservation(db, { ...args, projectId: project.id, sessionId: sessionId(), source: 'agent', rootPath: project.rootPath });
       const verb = { created: 'Stored', 'updated-topic': 'Updated topic', 'merged-duplicate': 'Merged into existing' }[r.action];
-      return text(`${verb} ${indexLine(r.observation)}${branchNote(r.observation)}`);
+      return text(`${verb} ${indexLine(r.observation)}${branchNote(r)}`);
     },
   );
 
@@ -327,7 +339,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         relatedCommits: z.array(z.string()).optional(),
         topicKey: z.string().optional(),
         scope: z.enum(['branch', 'project']).optional()
-          .describe('On a feature branch, memories stay on it until it merges (default). "project" for what holds on every branch: tooling, environment, how main works'),
+          .describe('On a feature branch, Synapse keeps a memory about the branch\'s own changes on it until it merges and makes the rest project-wide (decided from files, names and session edits). "project" or "branch" to choose'),
       },
     },
     async (a) => {
@@ -353,7 +365,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         rootPath: project.rootPath,
         scope: a.scope,
       });
-      return text(`Stored reasoning ${indexLine(r.observation)}${branchNote(r.observation)}`);
+      return text(`Stored reasoning ${indexLine(r.observation)}${branchNote(r)}`);
     },
   );
 
@@ -373,13 +385,19 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         limit: z.number().int().min(1).max(50).optional(),
         maxTokens: z.number().int().min(50).optional(),
         scope: z.enum(['project', 'global']).optional().describe('global searches all projects'),
+        branches: z.enum(['current', 'all']).optional().describe('"all" includes memories still scoped to other feature branches'),
       },
     },
     async (a) => {
       const global = a.scope === 'global';
+      const current = visibleBranch(project);
+      const branch = global || a.branches === 'all' ? undefined : current;
       // Keywords, plus meaning when embeddings are on (synapse embed); keyword-only otherwise.
-      const hits = await hybridSearch(db, { ...a, projectId: global ? undefined : project.id, limit: a.limit ?? 10, branch: global ? undefined : visibleBranch(project) });
+      const hits = await hybridSearch(db, { ...a, projectId: global ? undefined : project.id, limit: a.limit ?? 10, branch });
+      // Matches that are only hidden because they belong to another branch: say so, so nothing learned there is lost.
+      const hidden = branch === undefined ? '' : otherBranchMatches(a.query, current);
       if (hits.length === 0) {
+        if (hidden) return text(`No memories matched "${a.query}" on this branch.${hidden}`);
         const stats = projectStats(db, global ? undefined : project.id);
         const active = stats.byStatus.active ?? 0;
         return text(
@@ -395,7 +413,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         projectId: project.id, sessionId: sessionId(), channel: 'search', query: a.query,
         items: shown.map((h, i) => ({ observationId: h.observation.id, title: h.observation.title, revision: revisionOf(h.observation), rank: i + 1, score: h.score, stale: Boolean(changes.get(h.observation.id)?.length) })),
       });
-      return text(out);
+      return text(out + hidden);
     },
   );
 

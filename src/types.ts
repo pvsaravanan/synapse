@@ -108,6 +108,8 @@ export type StoreAction = 'created' | 'updated-topic' | 'merged-duplicate';
 export interface StoreResult {
   observation: Observation;
   action: StoreAction;
+  /** On a feature branch: why the memory belongs to the branch or holds project-wide (branch.ts scopeFor). */
+  scopeReason?: string;
 }
 
 export interface Session {

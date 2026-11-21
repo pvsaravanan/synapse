@@ -10,7 +10,7 @@ import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { archiveBranch, branchScope, currentBranch, defaultBranch, listBranches, makeProjectWide, promoteBranch, refreshBranches } from '../src/branch.js';
+import { archiveBranch, branchScope, currentBranch, defaultBranch, listBranches, makeProjectWide, promoteBranch, refreshBranches, resetBranchCache } from '../src/branch.js';
 import { buildProjectContext } from '../src/context.js';
 import { openDatabase, type DB } from '../src/db.js';
 import { fileNotes } from '../src/file-notes.js';
@@ -45,8 +45,11 @@ beforeEach(() => {
   project = detectProject(dir);
 });
 
+/** Store as an agent would; scope "branch" unless the test is about how the scope is decided (pass scope: undefined). */
 const remember = (title: string, extra: Record<string, unknown> = {}) =>
-  storeObservation(db, { projectId: project.id, entityName: 'auth', type: 'gotcha', title, narrative: `${title}, details`, rootPath: project.rootPath, ...extra }).observation;
+  storeObservation(db, { projectId: project.id, entityName: 'auth', type: 'gotcha', title, narrative: `${title}, details`, rootPath: project.rootPath, scope: 'branch', ...extra }).observation;
+const decide = (title: string, extra: Record<string, unknown> = {}) =>
+  storeObservation(db, { projectId: project.id, entityName: 'auth', type: 'gotcha', title, narrative: `${title}, details`, rootPath: project.rootPath, ...extra });
 const titles = (branch: string | null) => search(db, { query: 'session', projectId: project.id, branch }).map((h) => h.observation.title).sort();
 
 describe('scoping', () => {
@@ -68,17 +71,61 @@ describe('scoping', () => {
 
   it('keeps other branches\' memories out of briefs and file notes', () => {
     git('checkout', '-q', '-b', 'feature/redis');
+    writeFileSync(path.join(dir, 'src/auth.ts'), 'export const AUTH = "redis";\n'); // the branch changes the file
     const scoped = remember('Session store moves to Redis', { filesModified: ['src/auth.ts'] });
+    expect(scoped.branch).toBe('feature/redis');
     const onBranch = buildProjectContext(db, project, 'session store');
     expect(onBranch.text).toContain('Branch: feature/redis');
     expect(onBranch.text).toContain(`#${scoped.id}`);
     expect(fileNotes(db, project, undefined, ['src/auth.ts'])).toContain('Session store moves to Redis');
 
+    git('stash', '-q');
     git('checkout', '-q', 'main');
     const onMain = buildProjectContext(db, project, 'session store');
     expect(onMain.text).not.toContain('Branch:');
     expect(onMain.text).not.toContain(`#${scoped.id}`);
     expect(fileNotes(db, project, undefined, ['src/auth.ts'])).toBeUndefined();
+  });
+
+  it('decides from evidence whether an agent\'s memory belongs to the branch or holds project-wide', () => {
+    commit('src/db.ts', 'export const DB = 1;\n', 'db');
+    git('checkout', '-q', '-b', 'feature/redis');
+    commit('src/auth.ts', 'export const AUTH = 2;\nexport function connectRedisStore() {}\n', 'redis auth');
+    writeFileSync(path.join(dir, 'src/cache.ts'), 'export const CACHE_TTL_SECONDS = 60;\n'); // new, untracked
+    const where = (r: ReturnType<typeof decide>) => [r.observation.branch ?? 'project', r.scopeReason];
+
+    // Named files: changed or new on the branch -> branch; unchanged -> project-wide.
+    expect(where(decide('Pool lives in db.ts', { filesModified: ['src/db.ts'] }))).toEqual(['project', expect.stringContaining("src/db.ts, which this branch hasn't changed")]);
+    expect(where(decide('Auth uses Redis', { filesModified: ['src/auth.ts'] }))[0]).toBe('feature/redis');
+    expect(where(decide('Cache is new', { filesModified: ['src/cache.ts'] }))[0]).toBe('feature/redis');
+    // No files named: paths in the text count the same way.
+    expect(where(decide('Pool size note', { narrative: 'The pool in `src/db.ts` caps at 10.' }))[0]).toBe('project');
+    expect(where(decide('Auth note', { narrative: 'See src/auth.ts for the store.' }))[0]).toBe('feature/redis');
+    // Names the branch introduced.
+    expect(where(decide('Store connects lazily', { narrative: 'connectRedisStore waits for the first request.' }))).toEqual(['feature/redis', expect.stringContaining('connectRedisStore')]);
+    expect(where(decide('TTL is a minute', { narrative: 'CACHE_TTL_SECONDS is 60.' }))[0]).toBe('feature/redis');
+    // Nothing to go on: plans and decisions are the branch's, gotchas hold everywhere.
+    expect(where(decide('Use Redis for sessions', { type: 'decision', narrative: 'Chosen over memcached.' }))[0]).toBe('feature/redis');
+    expect(where(decide('Docker must run for tests', { narrative: 'Integration tests need the daemon.' }))).toEqual(['project', expect.stringContaining('gotcha')]);
+    // The session's edits, when there are any.
+    storeObservation(db, { projectId: project.id, entityName: 'src', type: 'what-changed', title: 'Edited src/db.ts', narrative: 'x', source: 'hook', admissionState: 'candidate', sessionId: 's-1', filesModified: ['src/db.ts'] });
+    expect(where(decide('Pool tuning idea', { type: 'decision', narrative: 'Raise it later.', sessionId: 's-1' }))[0]).toBe('project');
+    storeObservation(db, { projectId: project.id, entityName: 'src', type: 'what-changed', title: 'Edited src/auth.ts', narrative: 'x', source: 'hook', admissionState: 'candidate', sessionId: 's-2', filesModified: ['src/auth.ts'] });
+    expect(where(decide('Login flow gotcha', { narrative: 'Retry once.', sessionId: 's-2' }))[0]).toBe('feature/redis');
+    // A choice always wins.
+    expect(where(decide('Pool, scoped on purpose', { filesModified: ['src/db.ts'], scope: 'branch' }))[0]).toBe('feature/redis');
+    expect(where(decide('Auth, everywhere on purpose', { filesModified: ['src/auth.ts'], scope: 'project' }))[0]).toBe('project');
+  });
+
+  it('keeps scoping during a rebase, when HEAD is detached', () => {
+    git('checkout', '-q', '-b', 'feature/rebasing');
+    commit('src/auth.ts', 'export const AUTH = 2;\n', 'one');
+    const head = git('rev-parse', 'HEAD');
+    git('checkout', '-q', '--detach', head);
+    expect(currentBranch(project.rootPath)).toBeUndefined(); // plain detached HEAD: no branch
+    mkdirSync(path.join(dir, '.git', 'rebase-merge'), { recursive: true });
+    writeFileSync(path.join(dir, '.git', 'rebase-merge', 'head-name'), 'refs/heads/feature/rebasing\n');
+    expect(currentBranch(project.rootPath)).toBe('feature/rebasing');
   });
 
   it('forks a project-wide topic on a branch: the branch copy stands in for it there, main keeps its version', () => {
@@ -121,6 +168,45 @@ describe('merges', () => {
     expect(listBranches(db, project.id)[0]).toMatchObject({ state: 'merged', memories: 0 });
   });
 
+  it('detects squash merges, with the branch kept or deleted', () => {
+    git('checkout', '-q', '-b', 'feature/squash');
+    const a = remember('Session squash change');
+    commit('src/auth.ts', 'export const AUTH = 5;\n', 'one');
+    commit('src/squash.ts', 'export const S = 1;\n', 'two');
+    refreshBranches(db, project);
+    git('checkout', '-q', 'main');
+    commit('src/other.ts', 'export const O = 1;\n', 'main moves on');
+    expect(refreshBranches(db, project).merged).toEqual([]);
+    git('merge', '-q', '--squash', 'feature/squash');
+    git('commit', '-q', '-m', 'squashed feature');
+    expect(refreshBranches(db, project).merged).toEqual(['feature/squash']);
+    expect(getObservation(db, a.id)!.branch).toBeUndefined();
+
+    git('checkout', '-q', '-b', 'feature/squash2');
+    const b = remember('Session second squash');
+    commit('src/s2.ts', 'export const S2 = 1;\n', 's2');
+    refreshBranches(db, project);
+    git('checkout', '-q', 'main');
+    git('merge', '-q', '--squash', 'feature/squash2');
+    git('commit', '-q', '-m', 'squashed 2');
+    git('branch', '-q', '-D', 'feature/squash2');
+    expect(refreshBranches(db, project).merged).toEqual(['feature/squash2']);
+    expect(getObservation(db, b.id)!.branch).toBeUndefined();
+  });
+
+  it('counts a merge that only origin\'s copy of the default branch has (local main not pulled)', () => {
+    git('checkout', '-q', '-b', 'feature/remote');
+    const a = remember('Session remote merge');
+    commit('src/remote.ts', 'export const R = 1;\n', 'remote work');
+    refreshBranches(db, project);
+    // Simulate the merge happening on origin: origin/main has the branch's commit, local main doesn't.
+    git('update-ref', 'refs/remotes/origin/main', git('rev-parse', 'feature/remote'));
+    git('checkout', '-q', 'main');
+    expect(git('rev-parse', 'main')).not.toBe(git('rev-parse', 'origin/main'));
+    expect(refreshBranches(db, project).merged).toEqual(['feature/remote']);
+    expect(getObservation(db, a.id)!.branch).toBeUndefined();
+  });
+
   it('detects fast-forward merges after the branch is deleted, and rebased (patch-equivalent) branches', () => {
     git('checkout', '-q', '-b', 'feature/ff');
     const a = remember('Fast-forward session change');
@@ -140,6 +226,18 @@ describe('merges', () => {
     git('cherry-pick', 'feature/rebase');
     expect(refreshBranches(db, project).merged).toEqual(['feature/rebase']);
     expect(getObservation(db, b.id)!.branch).toBeUndefined();
+  });
+
+  it('does not count a branch whose commits net out to no change as merged', () => {
+    git('checkout', '-q', '-b', 'feature/noop');
+    remember('Session no-op change');
+    commit('src/auth.ts', 'export const AUTH = 9;\n', 'change');
+    commit('src/auth.ts', 'export const AUTH = 1;\n', 'revert it');
+    git('checkout', '-q', 'main');
+    commit('src/other.ts', 'export const O = 1;\n', 'main moves on');
+    expect(refreshBranches(db, project)).toEqual({ merged: [], ended: [] });
+    git('branch', '-q', '-D', 'feature/noop');
+    expect(refreshBranches(db, project)).toEqual({ merged: [], ended: ['feature/noop'] });
   });
 
   it('marks a deleted unmerged branch ended, keeps its memories hidden, and lets them be promoted or archived', () => {
@@ -171,6 +269,23 @@ describe('merges', () => {
   });
 });
 
+describe('default branch', () => {
+  it('reads git config synapse.defaultBranch, remote HEADs, and remote-only default branches', () => {
+    git('branch', '-q', '-m', 'main', 'develop'); // no main / master / trunk locally
+    resetBranchCache();
+    expect(defaultBranch(project.rootPath)).toBeUndefined();
+    git('update-ref', 'refs/remotes/upstream/trunk', 'HEAD');
+    resetBranchCache();
+    expect(defaultBranch(project.rootPath)).toBe('trunk');
+    git('symbolic-ref', 'refs/remotes/upstream/HEAD', 'refs/remotes/upstream/develop');
+    resetBranchCache();
+    expect(defaultBranch(project.rootPath)).toBe('develop');
+    git('config', 'synapse.defaultBranch', 'release');
+    resetBranchCache();
+    expect(defaultBranch(project.rootPath)).toBe('release');
+  });
+});
+
 describe('MCP tools', () => {
   it('say where a stored memory lives, and search shows the current branch\'s memories', async () => {
     git('checkout', '-q', '-b', 'feature/redis');
@@ -179,12 +294,16 @@ describe('MCP tools', () => {
     const client = new Client({ name: 'test', version: '1' });
     await Promise.all([server.connect(x), client.connect(y)]);
     const call = async (name: string, args: Record<string, unknown>) => ((await client.callTool({ name, arguments: args })) as { content: { text: string }[] }).content[0].text;
-    const stored = await call('synapse_store', { entityName: 'auth', type: 'gotcha', title: 'Session store moves to Redis', narrative: 'Redis replaces cookies.' });
-    expect(stored).toContain('On branch feature/redis');
-    const wide = await call('synapse_store', { entityName: 'ci', type: 'gotcha', title: 'Session tests need Docker', narrative: 'Docker must run.', scope: 'project' });
-    expect(wide).not.toContain('On branch');
+    const stored = await call('synapse_store', { entityName: 'auth', type: 'decision', title: 'Session store moves to Redis', narrative: 'Redis replaces cookies.' });
+    expect(stored).toMatch(/On branch feature\/redis because a decision with nothing else to go on/);
+    const wide = await call('synapse_store', { entityName: 'ci', type: 'gotcha', title: 'Session tests need Docker', narrative: 'Docker must run.' });
+    expect(wide).toMatch(/Project-wide because a gotcha that names nothing the branch changed/);
     expect(await call('synapse_search', { query: 'session' })).toContain('Session store moves to Redis');
     git('checkout', '-q', 'main');
-    expect(await call('synapse_search', { query: 'session' })).not.toContain('Session store moves to Redis');
+    const onMain = await call('synapse_search', { query: 'session' });
+    expect(onMain).not.toContain('Session store moves to Redis');
+    expect(onMain).toContain('1 more match on other branches (feature/redis), not shown: pass branches "all"');
+    expect(await call('synapse_search', { query: 'session', branches: 'all' })).toContain('Session store moves to Redis');
+    expect(await call('synapse_search', { query: 'redis replaces' })).toMatch(/No memories matched "redis replaces" on this branch\.\n1 more match on other branches/);
   });
 });

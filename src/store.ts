@@ -1,4 +1,4 @@
-import { branchScope, trackBranch } from './branch.js';
+import { branchScope, scopeFor, trackBranch } from './branch.js';
 import type { DB } from './db.js';
 import { hashFile, hashFiles, type FileHashes } from './freshness.js';
 import path from 'node:path';
@@ -219,7 +219,22 @@ function storeObservationInner(db: DB, input: StoreInput): StoreResult {
   const mergeHashes = (prev: FileHashes) => JSON.stringify({ ...prev, ...hashes });
   // On a feature branch the memory belongs to the branch (unless it holds everywhere); updates stay within a scope, so
   // revising a project-wide topic from a branch makes a branch copy that stands in for it there until the merge.
-  const branch = input.scope === 'project' ? null : branchScope(input.rootPath) ?? null;
+  let branch = input.scope === 'project' ? null : branchScope(input.rootPath) ?? null;
+  let scopeReason: string | undefined;
+  // Whether an agent's or person's memory belongs to the branch is decided from evidence (branch.ts scopeFor), unless
+  // they chose; a memory revising a project-wide topic stays on the branch (it forks, so the default branch keeps its
+  // version until the merge). Auto-captured records always belong to the branch.
+  if (branch && !input.scope && (input.source ?? 'agent') !== 'hook' && input.source !== 'git') {
+    const forks = s.topicKey && db.prepare("SELECT 1 FROM observations WHERE projectId = ? AND topicKey = ? AND branch IS NULL AND status = 'active'").get(input.projectId, s.topicKey);
+    if (!forks) {
+      const decided = scopeFor(input.rootPath!, {
+        type: input.type, files: s.filesModified, text: [s.title, s.narrative, ...s.facts].join('\n'),
+        sessionFiles: input.sessionId ? sessionEditedFiles(db, input.sessionId) : [],
+      });
+      if (decided.scope === 'project') branch = null;
+      scopeReason = decided.why;
+    }
+  }
   if (branch) {
     try {
       const tracked = db.prepare("SELECT 1 FROM branch_scopes WHERE projectId = ? AND branch = ? AND state = 'open'").get(input.projectId, branch);
@@ -250,7 +265,7 @@ function storeObservationInner(db: DB, input: StoreInput): StoreResult {
         causal, input.admissionState ?? 'qualified', input.valueCategory ?? null, mergeHashes(prev.fileHashes), prev.id,
       );
       snapshotRevision(db, prev, { change: 'topic-update', sessionId: input.sessionId });
-      return { observation: getObservation(db, prev.id)!, action: 'updated-topic' };
+      return { observation: getObservation(db, prev.id)!, action: 'updated-topic', scopeReason };
     }
   }
 
@@ -282,7 +297,7 @@ function storeObservationInner(db: DB, input: StoreInput): StoreResult {
           o.id,
         );
         snapshotRevision(db, o, { change: 'duplicate-merge', sessionId: input.sessionId });
-        return { observation: getObservation(db, o.id)!, action: 'merged-duplicate' };
+        return { observation: getObservation(db, o.id)!, action: 'merged-duplicate', scopeReason };
       }
     }
   }
@@ -303,7 +318,7 @@ function storeObservationInner(db: DB, input: StoreInput): StoreResult {
       JSON.stringify(uniq(input.relatedCommits)), JSON.stringify(uniq(input.relatedEntities)),
       input.admissionState ?? 'qualified', input.valueCategory ?? null, causal, JSON.stringify(hashes), branch,
     );
-  return { observation: getObservation(db, Number(info.lastInsertRowid))!, action: 'created' };
+  return { observation: getObservation(db, Number(info.lastInsertRowid))!, action: 'created', scopeReason };
 }
 
 export function setStatus(db: DB, ids: number[], status: ObservationStatus, projectId?: string): number {

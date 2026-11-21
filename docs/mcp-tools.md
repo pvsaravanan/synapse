@@ -23,7 +23,7 @@ Current code and the user's request always take precedence over memory.
 
 ### `synapse_store`
 
-Store an observation. Credentials are redacted before the write. On a feature branch the memory belongs to that branch until it merges ([branch-scoped memories](concepts.md#branch-scoped-memories)); pass `scope: "project"` (also on `synapse_store_reasoning`) for what holds on every branch.
+Store an observation. Credentials are redacted before the write. On a feature branch the memory belongs to that branch until it merges ([branch-scoped memories](concepts.md#branch-scoped-memories)); Synapse decides from the files and text whether a memory is the branch's own work or holds everywhere, and the result says which and why. Pass `scope: "project"` or `"branch"` (also on `synapse_store_reasoning`) to choose.
 
 | Parameter | Type | Required | Notes |
 |---|---|---|---|
@@ -71,6 +71,7 @@ Ranked search that returns an L1 index.
 | `limit` | 1–50 | 10 | |
 | `maxTokens` | number | | Token budget for the index |
 | `scope` | `project`\|`global` | `project` | |
+| `branches` | `current`\|`all` | `current` | `all` includes memories still scoped to other feature branches; otherwise their matches are only counted in a footer |
 
 Hits whose files changed since they were stored are flagged `changed since: <files>`, followed by a hint line (project scope only; see [file freshness](concepts.md#file-freshness)).
 

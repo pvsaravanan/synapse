@@ -225,7 +225,7 @@ async function main(): Promise<void> {
         rootPath: project.rootPath,
         scope: str('scope') === 'project' ? 'project' : undefined,
       });
-      console.log(`${r.action}: ${disc.indexLine(r.observation)}${r.observation.branch ? ` (on branch ${r.observation.branch} until it merges)` : ''}`);
+      console.log(`${r.action}: ${disc.indexLine(r.observation)}${r.observation.branch ? ` (on branch ${r.observation.branch} until it merges${r.scopeReason ? `: ${r.scopeReason}` : ''})` : r.scopeReason ? ` (project-wide: ${r.scopeReason})` : ''}`);
       break;
     }
     case 'detail': {
