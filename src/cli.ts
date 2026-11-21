@@ -50,6 +50,8 @@ Usage: synapse <command> [options]
   team status|export|import [--dry-run]
                                   Share curated memories through the repo's .synapse/memory.jsonl (status checks it is current)
   embed [--status | --off]        Turn on meaning-based search (downloads a ~23 MB model once), check it, or turn it off
+  bench [--file F] [--auto] [--k N] [--keyword] [--json]
+                                  Measure search quality on this project's memories (hit@k, MRR), keyword vs meaning
   usage [--days N] [--limit N]    Which memories get read and rated helpful, and which aren't read in N days (default 30)
   consolidate [--dry-run]         Merge ended sessions' auto-captured edit and command records; archive duplicate, noise and stale candidates
   doctor                          Diagnose environment
@@ -74,7 +76,7 @@ async function main(): Promise<void> {
       count: { type: 'string' }, since: { type: 'string' }, summary: { type: 'string' }, archive: { type: 'boolean' },
       out: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, scope: { type: 'string' }, text: { type: 'string' },
       applies: { type: 'string' }, evidence: { type: 'string' }, reason: { type: 'string' }, state: { type: 'string' }, query: { type: 'string' },
-      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, event: { type: 'string' }, fix: { type: 'boolean' }, port: { type: 'string' }, open: { type: 'boolean' }, 'allow-tools': { type: 'boolean' }, 'no-instructions': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, event: { type: 'string' }, fix: { type: 'boolean' }, port: { type: 'string' }, open: { type: 'boolean' }, 'allow-tools': { type: 'boolean' }, 'no-instructions': { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, file: { type: 'string' }, auto: { type: 'boolean' }, k: { type: 'string' }, keyword: { type: 'boolean' }, json: { type: 'boolean' },
     },
   });
   const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : undefined);
@@ -384,6 +386,31 @@ async function main(): Promise<void> {
         const n = await e.ensureEmbeddings(db, project.id, { embedder, status: 'all' });
         e.setEmbedEnabled(db, true);
         console.log(`Meaning-based search is on. Embedded ${n} memor${n === 1 ? 'y' : 'ies'} of ${project.id} in ${((Date.now() - started) / 1000).toFixed(1)}s; new and edited ones are embedded when they are next searched.`);
+      }
+      break;
+    }
+    case 'bench': {
+      const b = await import('./bench.js');
+      const e = await import('./embed.js');
+      const k = Math.max(1, Number(str('k') ?? 10) || 10);
+      const file = str('file') ?? path.join(project.rootPath, '.synapse', 'bench.jsonl');
+      const fromFile = !v.auto && (str('file') !== undefined || existsSync(file));
+      const cases = fromFile ? b.readBenchFile(file) : b.autoCases(db, project.id);
+      const source = fromFile ? path.relative(process.cwd(), file) || file : 'generated cases (titles and details of curated memories)';
+      let embedder;
+      if (!v.keyword && e.modelCached()) {
+        try {
+          embedder = await e.getEmbedder();
+        } catch (err) {
+          if (process.env.SYNAPSE_DEBUG) console.error(`[synapse bench] ${(err as Error).message}`);
+        }
+      }
+      const report = await b.runBench(db, project.id, cases, { k, embedder, source });
+      if (v.json) console.log(JSON.stringify(report, null, 2));
+      else {
+        console.log(b.formatBench(report));
+        if (!fromFile) console.log(`\nGenerated cases share words with their memories, so they flatter keyword search. Write real questions to ${path.relative(process.cwd(), file) || file} (one {"query": "...", "expect": ["<title or #id>"]} per line) for a fair comparison.`);
+        if (!embedder && !v.keyword) console.log('\nMeaning-based search was not measured: run `synapse embed` to download the model.');
       }
       break;
     }

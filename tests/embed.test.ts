@@ -89,13 +89,15 @@ describe('meaning-based search', () => {
     expect(hits[0].observation.id).toBe(login.id);
   });
 
-  it('blends: a keyword match keeps its score, meaning fills part of the gap, weak similarity adds nothing', () => {
+  it('blends: meaning adds to the keyword score without squeezing keyword differences, weak similarity adds nothing', () => {
     expect(blendSemantic(0.6, undefined)).toBe(0.6);
     expect(blendSemantic(0, 0.1)).toBe(0);
     expect(blendSemantic(0, 0.19)).toBeGreaterThan(0); // a short query's real match still counts
-    expect(blendSemantic(0, 0.9)).toBeCloseTo(0.85);
+    expect(blendSemantic(0, 0.9)).toBeCloseTo(1 / 3); // meaning alone: at most a third of a full match
     expect(blendSemantic(1, 0.9)).toBe(1);
     expect(blendSemantic(0.5, 0.5)).toBeGreaterThan(0.5);
-    expect(blendSemantic(0.6, 0.05, 0.2)).toBeCloseTo(0.3); // a keyword hit the model calls unrelated loses some score
+    // An exact keyword match stays ahead of a partial one that is closer in meaning (the old blend nearly tied them).
+    expect(blendSemantic(1, 0.3)).toBeGreaterThan(blendSemantic(0.3, 0.9));
+    expect(blendSemantic(0.6, 0.05, 0.2)).toBeCloseTo(0.45); // a keyword hit the model calls unrelated loses a quarter
   });
 });

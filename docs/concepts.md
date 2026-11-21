@@ -117,8 +117,10 @@ Search uses SQLite FTS5 with BM25.
 **Final score:**
 
 ```
-score = 0.7 × normalizedBM25 + 0.3 × relevance
+score = 0.7 × normalizedBM25 + 0.3 × (1 − e^−relevance)
 ```
+
+Relevance (below) can exceed 1 for a much-read, well-rated memory, so it is bounded to 0..1 before it is weighed: it orders memories but cannot outweigh a much better text match.
 
 Auto-captured `candidate` memories are multiplied by 0.45, so curated knowledge outranks comparable matches from logs. An empty query skips text matching and lists memories by relevance alone, which is useful for "what do we know?".
 
@@ -127,11 +129,26 @@ Auto-captured `candidate` memories are multiplied by 0.45, so curated knowledge 
 Keywords miss memories worded differently: "crash" doesn't find "panics", "signed out" doesn't find "session cookie". **`synapse embed`** turns on meaning-based search with a small sentence-embedding model (`Xenova/all-MiniLM-L6-v2`, about 23 MB) that runs inside Synapse, on your machine, through [transformers.js](https://huggingface.co/docs/transformers.js).
 
 - **One download, then offline.** `synapse embed` downloads the model once into `~/.synapse/models` (from Hugging Face) and embeds the project's memories. After that, nothing goes over the network: a search never downloads, and with the model missing it simply stays keyword-only. On networks that inspect TLS with their own root certificate (curl works, Node reports `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`), it retries the download trusting the system certificate store.
-- **Blended, not replaced.** Each memory's cosine similarity to the query counts as *related* when it is at least 0.15 and at least 60% of the best match for that query (measured with this model, related pairs scored 0.19–0.48 and unrelated ones up to 0.17). Related memories gain score and join the results even without a shared word; a keyword match the model calls unrelated ("out" in "index out of range" for "signed out") keeps half its score. Exact wording still ranks first.
+- **Blended, not replaced.** Each memory's cosine similarity to the query counts as *related* when it is at least 0.15 and at least 60% of the best match for that query (measured with this model, related pairs scored 0.19–0.48 and unrelated ones up to 0.17). Related memories gain score and join the results even without a shared word; a keyword match the model calls unrelated ("out" in "index out of range" for "signed out") keeps three quarters of its score. Meaning is *added* to the keyword score (at most half a full match, then rescaled), so a closer meaning breaks ties and finds reworded memories without lifting a weak keyword match level with an exact one. `synapse bench` (below) is how these weights were chosen.
 - **Kept current lazily.** Vectors are stored per memory with a hash of the embedded text, and new or edited memories are embedded before the next search (up to 500 at a time).
 - **Where it applies:** `synapse_search`, `synapse search` and the search box in `synapse ui`. The session-start brief stays keyword-only, so hooks never load the model and starting a session stays fast.
 - **Optional dependency.** The runtime (`@huggingface/transformers` with ONNX Runtime, about 300 MB in `node_modules`) is an optional dependency: if it fails to install, Synapse works as before, keyword-only.
 - `synapse embed --status` shows whether it's on and how many memories have vectors; `synapse embed --off` turns it off (vectors are kept). `SYNAPSE_EMBED=1`/`0` overrides either way.
+
+### Measuring retrieval
+
+**`synapse bench`** measures how often search puts the right memory near the top, on the project's own memories. Each case is a query plus the memories that answer it; every case runs through the same search agents use (the project's active memories, auto-captured candidates included), keyword-only and, when the model is downloaded, keyword plus meaning. Nothing is recorded as a read.
+
+```
+                    hit@1  hit@3 hit@10  recall   MRR
+keyword               82%    92%   100%   100%   0.88
+keyword + meaning     89%   100%   100%   100%   0.93
+```
+
+- **hit@k:** share of cases with an expected memory in the top k. **recall:** share of all expected memories found in the top k. **MRR:** mean of 1/rank of the first expected memory (0 when it is missing).
+- **Cases** come from **`.synapse/bench.jsonl`** (or `--file`): one `{"query": "...", "expect": ["<title>"], "kind": "symptom"}` per line. A memory is named by its title (exact, or a prefix only it has), `#id` or team uid; `kind` is a free label results are grouped by. Lines starting with `//` are comments. Add a case whenever search misses something, so the benchmark grows with the real questions. Commit the file to share it with the team, or add it to `.gitignore` to keep it local.
+- **`--auto`** (and the default when there is no file) generates cases from the curated memories: each title, and a sentence from each text. These share words with their memory, so they flatter keyword search; written paraphrases and symptoms ("sessions stay open after the agent quits") are what separate keyword from meaning-based search.
+- The report lists cases whose memory was not in the top 3, with what ranked first instead, and cases naming memories that no longer exist. `--keyword` skips meaning-based search, `--k N` changes the cutoff (default 10), and `--json` prints every case.
 
 ## Team memory
 

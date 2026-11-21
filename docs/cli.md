@@ -29,6 +29,7 @@ Commands that work on memory use the project of the **current directory** (see [
 | `synapse detail <id…>` | Full records |
 | `synapse timeline <id>` | Neighbours of one memory |
 | `synapse stats` | Counts by status and type for this project |
+| `synapse bench [--file F] [--auto] [--k N] [--keyword] [--json]` | Measure search quality on this project's memories: hit@1/3/k, recall and MRR for keyword search and for keyword plus meaning, from `.synapse/bench.jsonl` or generated cases; see [measuring retrieval](concepts.md#measuring-retrieval) |
 | `synapse usage [--days N] [--limit N]` | Which curated memories get read and rated helpful (with a `synapse lt promote` suggestion for the most-read), and which weren't read in the last N days (default 30); see [usage](concepts.md#usage) |
 | `synapse projects` | Every project with a memory count and last activity |
 

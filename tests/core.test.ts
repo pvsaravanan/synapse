@@ -13,7 +13,7 @@ import { relevance, retentionZone } from '../src/retention.js';
 import { buildFtsQuery, search } from '../src/search.js';
 import { redactSecrets } from '../src/secrets.js';
 import { addCheckpoint, checkpointText, endSession, listCheckpoints, recentSessions, startSession } from '../src/sessions.js';
-import { listObservations, recordFeedback, setStatus, storeObservation, timeline } from '../src/store.js';
+import { listObservations, recordAccess, recordFeedback, setStatus, storeObservation, timeline } from '../src/store.js';
 import type { Observation, ProjectInfo } from '../src/types.js';
 
 const P = 'acme/app';
@@ -94,6 +94,16 @@ describe('search', () => {
     setStatus(db, [hit.id], 'resolved');
     expect(search(db, { query: 'webhook', projectId: P })).toHaveLength(0);
     expect(search(db, { query: '', projectId: P }).map((h) => h.observation.id)).toEqual([other.id]);
+  });
+  it('keeps a full match ahead of a partial one that is read far more often', () => {
+    const exact = storeObservation(db, { ...base, entityName: 'worker', title: 'Worker panics on empty queue', narrative: 'Guard the first poll.' }).observation;
+    const popular = storeObservation(db, { ...base, entityName: 'pool', title: 'Worker pool sizing', narrative: 'Size the worker pool to the queue depth.', concepts: ['pinned'] }).observation;
+    recordAccess(db, Array(20).fill(popular.id));
+    recordFeedback(db, popular.id, 'helpful');
+    recordFeedback(db, popular.id, 'helpful');
+    const hits = search(db, { query: 'worker panics empty queue', projectId: P });
+    expect(hits.map((h) => h.observation.id)).toEqual([exact.id, popular.id]);
+    expect(Math.max(...hits.map((h) => h.relevance!))).toBeLessThan(1); // relevance is bounded before it is weighed
   });
   it('prefix-matches and down-ranks candidates', () => {
     storeObservation(db, { ...base, entityName: 'a', title: 'Migration ordering', narrative: 'migrations run alphabetically', admissionState: 'candidate' });

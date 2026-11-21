@@ -31,6 +31,7 @@ Full documentation: [docs/](docs/README.md) — [getting started](docs/getting-s
 - **Local web UI** (`synapse ui`): browse, search and curate memory, edit and merge memories, see which memories get read (and promote them) or go unread (and prune them), explore it as a node map of memories, components and files, check "changed since" flags against the git diff of what changed, qualify candidates and review long-term proposals.
 - **Reviewed long-term memory:** facts, procedures and events approved with a recorded reason. Only approved items reach the brief, and `user`-scope items carry across projects.
 - **Meaning-based search (optional):** `synapse embed` downloads a small embedding model once and runs it locally, so "crash" finds a memory that says "panics". Keyword search stays the default and the fallback.
+- **Retrieval benchmark:** `synapse bench` scores search (hit@k, MRR) on your own memories, keyword vs meaning, from your own query file (`.synapse/bench.jsonl`).
 - **Team memory through git:** `synapse team export` writes curated memories to `.synapse/memory.jsonl` (reviewable, one line each); teammates and CI agents load it automatically at setup and session start.
 - **Secret redaction** before every write
 - **No native dependencies:** uses Node's built-in `node:sqlite`

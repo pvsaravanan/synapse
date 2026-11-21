@@ -17,3 +17,6 @@ dist/
 .agents/hooks.json
 .agents/mcp_config.json
 *.synapse-backup
+
+# Local retrieval benchmark cases (synapse bench)
+.synapse/bench.jsonl

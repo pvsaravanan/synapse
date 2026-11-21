@@ -65,21 +65,30 @@ const CANDIDATE_PENALTY = 0.45;
 /** Cosine similarity mapped onto 0..1 (all-MiniLM-L6-v2 scored related pairs 0.19-0.48 in testing; see embed.ts). */
 const SEMANTIC_FLOOR = 0.12;
 const SEMANTIC_SPAN = 0.3;
-/** A meaning match alone scores at most this share of a full keyword match, so exact wording still ranks first. */
-const WEIGHT_SEMANTIC = 0.85;
-
-/** A keyword match the model calls unrelated ("out" in "index out of range" for "signed out") keeps this share. */
-const UNRELATED_KEYWORD = 0.5;
+/**
+ * Meaning adds up to this much to the keyword score (then rescaled to 0..1), so a meaning match alone scores at most a
+ * third of a full keyword match and keyword differences are never squeezed. Measured with `synapse bench`: higher
+ * weights demoted exact matches, lower ones gave up paraphrase gains.
+ */
+const WEIGHT_SEMANTIC = 0.5;
 
 /**
- * Blend a keyword match with meaning. Related (cosine at or above the cut): the keyword score is kept and meaning fills
- * part of what is missing. Embedded but unrelated: the keyword score is reduced. Not embedded: unchanged.
+ * A keyword match the model calls unrelated ("out" in "index out of range" for "signed out") keeps this share. Not
+ * less: a long memory can score under the cut for a query taken from its own text.
+ */
+const UNRELATED_KEYWORD = 0.75;
+
+/**
+ * Blend a keyword match with meaning. Related (cosine at or above the cut): meaning is added to the keyword score and
+ * the sum rescaled, so a closer meaning breaks ties without lifting a weak keyword match level with a full one (adding
+ * into the missing part, as before, did exactly that). Embedded but unrelated: the keyword score is reduced. Not
+ * embedded: unchanged.
  */
 export function blendSemantic(lex: number, cosine: number | undefined, cut = 0): number {
   if (cosine === undefined) return lex;
   if (cosine < cut) return lex * UNRELATED_KEYWORD;
   const s = Math.min(1, Math.max(0, (cosine - SEMANTIC_FLOOR) / SEMANTIC_SPAN));
-  return lex + (1 - lex) * WEIGHT_SEMANTIC * s;
+  return (lex + WEIGHT_SEMANTIC * s) / (1 + WEIGHT_SEMANTIC);
 }
 
 export function search(db: DB, opts: SearchOptions): SearchHit[] {
@@ -155,7 +164,9 @@ export function search(db: DB, opts: SearchOptions): SearchHit[] {
   const ctx = scoringContexts(db, rows.map((r) => r.obs.id));
   const nowDate = new Date();
   const hits: SearchHit[] = rows.map(({ obs, lex }) => {
-    const rel = relevance(obs, ctx.get(obs.id), nowDate);
+    // Relevance (importance x recency x reads x feedback) can reach 2 or more; bounded to 0..1 so a much-read memory
+    // can't outweigh a far better keyword match. The order among memories is unchanged.
+    const rel = 1 - Math.exp(-relevance(obs, ctx.get(obs.id), nowDate));
     let score = fts ? WEIGHT_LEXICAL * lex + WEIGHT_RELEVANCE * rel : rel;
     if (obs.admissionState === 'candidate') score *= CANDIDATE_PENALTY;
     return { observation: obs, score, lexical: lex, relevance: rel, ...(sem?.sims.has(obs.id) ? { semantic: sem.sims.get(obs.id) } : {}) };
