@@ -57,7 +57,7 @@ Search is project-scoped by default. Pass `scope: "global"` (MCP) or `--global` 
 
 When an observation is stored, Synapse goes through three checks in order:
 
-1. **Topic upsert.** If `topicKey` is set and an active observation in the same project already has that key, it is **revised in place**. The content is replaced, files, concepts and cross-references are merged, and `revisionCount` goes up. Use this for evolving topics such as "the current auth session model". `synapse_suggest_topic_key` produces keys like `decisions/auth/session-model`.
+1. **Topic upsert.** If `topicKey` is set and an active observation in the same project already has that key, it is **revised in place**. The content is replaced, files, concepts and cross-references are merged, and `revisionCount` goes up; the replaced version is kept in the memory's [history](#memory-history). Use this for evolving topics such as "the current auth session model". `synapse_suggest_topic_key` produces keys like `decisions/auth/session-model`.
 2. **Duplicate merge.** Without a topic key, Synapse looks at recent active observations with the same entity and type. If one's title and narrative are at least **82% similar** (token-set Jaccard), the two are merged: the longer narrative wins and facts, files and concepts are combined.
 3. **Insert.** Otherwise a new observation is created.
 
@@ -181,6 +181,18 @@ A **read** is a memory reaching an agent: included in a brief (relevant memories
 - **Rated wrong:** still active, but rated conflicted, corrected or outdated.
 
 Only the last read's time is kept, so "read often" counts all reads ever, shown with when the last one was. Auto-captured candidates are left out; they have their own lifecycle ([consolidation](#consolidation)).
+
+## Memory history
+
+Revising a memory doesn't lose what it said before. Whenever a curated memory's content changes (a topic update, a near-duplicate merged into it, an edit, a merge, an update from the [team file](#team-memory), or a restore), the version it replaced is kept with when it was written, when it was replaced, what replaced it and, for agent stores, the session.
+
+- **`synapse history <id>`** lists the versions, newest first, each with what the next change did (title, type or area changes, narrative lines added and removed, facts and files). `--diff` prints the narrative lines; `--rev N` shows one version in full.
+- **`synapse history <id> --at 2026-03-01`** shows what the memory said on that date: "what did we believe before the refactor?"
+- **`synapse history <id> --restore N`** brings back version N. The version it replaces is kept too, so a restore can be undone the same way.
+- Agents use **`synapse_history`** (`id`, optional `at` or `revision`) to see how a decision evolved.
+- In **`synapse ui`**, a memory with earlier versions has a **History** section: each version with a diff against the next one and a **Restore this version** button.
+
+Only content changes count: resolving, archiving or reopening a memory doesn't add a version, and neither does storing the same text again. Auto-captured candidates keep no history (they are logs), and each memory keeps its last 50 versions. History is local to your database; the team file carries only the current version.
 
 ## What each session was shown
 

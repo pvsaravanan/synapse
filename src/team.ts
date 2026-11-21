@@ -23,7 +23,7 @@ import { getMeta, setMeta, type DB } from './db.js';
 import { fileKey, hashFiles } from './freshness.js';
 import { isIgnored } from './ignore.js';
 import { redactSecrets } from './secrets.js';
-import { estimateTokens, rowToObservation, setStatus, similarity } from './store.js';
+import { estimateTokens, getObservation, rowToObservation, setStatus, similarity, snapshotRevision } from './store.js';
 import { OBSERVATION_TYPES, type Observation, type ProjectInfo } from './types.js';
 
 export const TEAM_FILE = path.join('.synapse', 'memory.jsonl');
@@ -179,10 +179,12 @@ function writeEntry(db: DB, project: ProjectInfo, e: TeamMemory, id?: number): n
     estimateTokens([e.title, e.narrative, ...facts].join('\n')), e.updatedAt,
   ];
   if (id !== undefined) {
+    const prev = getObservation(db, id);
     db.prepare(
       `UPDATE observations SET type=?, entityName=?, title=?, narrative=?, facts=?, filesModified=?, concepts=?, relatedEntities=?, topicKey=?,
        fileHashes=?, tokens=?, updatedAt=?, status='active', admissionState='qualified', uid=?, revisionCount=revisionCount+1 WHERE id=?`,
     ).run(...fields, e.uid, id);
+    if (prev) snapshotRevision(db, prev, { change: 'team', note: 'from .synapse/memory.jsonl' });
     return id;
   }
   const r = db

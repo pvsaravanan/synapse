@@ -94,6 +94,16 @@ A record whose files changed since it was stored adds a line such as `Changed si
 
 Lists memories from the same project in chronological order, with the anchor marked `>`.
 
+### `synapse_history`
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `id` | number | (required) |
+| `at` | ISO date or date-time | Optional: the version that held then |
+| `revision` | number | Optional: one version in full |
+
+Without `at` or `revision`, lists the memory's kept versions, newest first, with what each change did and the narrative lines it added and removed. See [memory history](concepts.md#memory-history).
+
 ### `synapse_resolve`
 
 | Parameter | Type | Default |

@@ -206,6 +206,7 @@ function storeObservationInner(db: DB, input: StoreInput): StoreResult {
         JSON.stringify(uniq([...prev.relatedEntities, ...(input.relatedEntities ?? [])])),
         causal, input.admissionState ?? 'qualified', input.valueCategory ?? null, mergeHashes(prev.fileHashes), prev.id,
       );
+      snapshotRevision(db, prev, { change: 'topic-update', sessionId: input.sessionId });
       return { observation: getObservation(db, prev.id)!, action: 'updated-topic' };
     }
   }
@@ -237,6 +238,7 @@ function storeObservationInner(db: DB, input: StoreInput): StoreResult {
           mergeHashes(o.fileHashes),
           o.id,
         );
+        snapshotRevision(db, o, { change: 'duplicate-merge', sessionId: input.sessionId });
         return { observation: getObservation(db, o.id)!, action: 'merged-duplicate' };
       }
     }
@@ -277,6 +279,7 @@ export function promoteObservation(db: DB, id: number): boolean {
 }
 
 export function deleteObservation(db: DB, id: number): boolean {
+  db.prepare('DELETE FROM observation_revisions WHERE observationId = ?').run(id);
   db.prepare('DELETE FROM observation_access WHERE observationId = ?').run(id);
   db.prepare('DELETE FROM feedback WHERE observationId = ?').run(id);
   db.prepare('DELETE FROM embeddings WHERE observationId = ?').run(id);
@@ -448,7 +451,7 @@ export interface ObservationEdit {
  * count goes up. Files it newly names are hashed from current content when `rootPath` is known, so they aren't
  * flagged as changed straight away. Throws on an unknown type or an empty title.
  */
-export function editObservation(db: DB, id: number, edit: ObservationEdit, rootPath?: string): Observation {
+export function editObservation(db: DB, id: number, edit: ObservationEdit, rootPath?: string, history: RevisionContext = { change: 'edit' }): Observation {
   const o = getObservation(db, id);
   if (!o) throw new Error(`No memory #${id}`);
   const type = (edit.type ?? o.type) as ObservationType;
@@ -475,6 +478,7 @@ export function editObservation(db: DB, id: number, edit: ObservationEdit, rootP
     type, s.entityName, s.title, s.narrative, JSON.stringify(s.facts), JSON.stringify(s.filesModified), JSON.stringify(s.concepts),
     estimateTokens(body), CAUSAL.test(body) ? 1 : 0, JSON.stringify(hashes), now(), edit.qualify ? 1 : 0, id,
   );
+  snapshotRevision(db, o, history);
   return getObservation(db, id)!;
 }
 
@@ -510,6 +514,7 @@ export function mergeObservations(db: DB, intoId: number, fromIds: number[]): Ob
     JSON.stringify(Object.assign({}, ...[...from].reverse().map((o) => o.fileHashes), into.fileHashes)),
     estimateTokens(body), CAUSAL.test(body) ? 1 : 0, now(), all.some((o) => o.admissionState === 'qualified') ? 1 : 0, intoId,
   );
+  snapshotRevision(db, into, { change: 'merge', note: `merged ${from.map((o) => `#${o.id}`).join(', ')}` });
   const archive = db.prepare("UPDATE observations SET status = 'archived', supersededBy = ?, updatedAt = ? WHERE id = ?");
   const reads = db.prepare('SELECT COALESCE(SUM(accessCount), 0) AS n FROM observation_access WHERE observationId IN (' + from.map(() => '?').join(',') + ')').get(...from.map((o) => o.id)) as { n: number };
   for (const o of from) archive.run(intoId, now(), o.id);
@@ -520,6 +525,36 @@ export function mergeObservations(db: DB, intoId: number, fromIds: number[]): Ob
     ).run(intoId, Number(reads.n), now());
   }
   return getObservation(db, intoId)!;
+}
+
+/** What replaced a version of a memory (history.ts). */
+export type RevisionChange = 'topic-update' | 'duplicate-merge' | 'edit' | 'merge' | 'team' | 'restore';
+export interface RevisionContext { change: RevisionChange; sessionId?: string | null; note?: string }
+
+/** Versions kept per memory; older ones are dropped. */
+export const MAX_REVISIONS = 50;
+const CONTENT_KEYS = ['type', 'entityName', 'title', 'narrative', 'facts', 'filesModified', 'concepts'] as const;
+const contentOf = (o: Observation) => JSON.stringify(CONTENT_KEYS.map((k) => o[k]));
+
+/**
+ * Keep the version `prev` was before a change, once the change is written. Only curated memories get history
+ * (auto-captured candidates are logs), and only when the content actually changed.
+ */
+export function snapshotRevision(db: DB, prev: Observation, ctx: RevisionContext): void {
+  if (prev.admissionState === 'candidate') return;
+  const now_ = getObservation(db, prev.id);
+  if (!now_ || contentOf(now_) === contentOf(prev)) return;
+  db.prepare(
+    `INSERT INTO observation_revisions (observationId, revision, type, entityName, title, narrative, facts, filesModified, concepts,
+      validFrom, replacedAt, change, sessionId, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    prev.id, prev.revisionCount, prev.type, prev.entityName, prev.title, prev.narrative, JSON.stringify(prev.facts), JSON.stringify(prev.filesModified),
+    JSON.stringify(prev.concepts), prev.updatedAt ?? prev.createdAt, now_.updatedAt ?? now(), ctx.change, ctx.sessionId ?? null, ctx.note ?? null,
+  );
+  db.prepare(
+    `DELETE FROM observation_revisions WHERE observationId = ? AND id NOT IN
+       (SELECT id FROM observation_revisions WHERE observationId = ? ORDER BY id DESC LIMIT ?)`,
+  ).run(prev.id, prev.id, MAX_REVISIONS);
 }
 
 /** Active memories of the same project most like `id` (title and narrative), for picking duplicates to merge. */

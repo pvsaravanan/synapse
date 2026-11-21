@@ -221,6 +221,9 @@ details.unew > summary { cursor: pointer; color: var(--muted); font-size: 14px; 
 .diff .del { background: var(--bad-bg); color: #8a2817; }
 .diff .hunk { color: var(--muted); background: var(--pill); margin: 4px 0; }
 .diff .meta { color: var(--faint); font-style: italic; }
+.diff.wrap .dl { white-space: pre-wrap; min-width: 0; overflow-wrap: anywhere; }
+.version .vbody { padding: 8px 12px; }
+.version .vtitle { margin: 0 0 6px; font-weight: 500; }
 @media (prefers-reduced-motion: reduce) { .fdiff > summary::before { transition: none; } }
 .md code { background: var(--soft); border-radius: 5px; padding: 1px 5px; }
 .md pre { background: var(--soft); border-radius: 12px; padding: 12px 14px; overflow-x: auto; white-space: pre; }
@@ -1355,6 +1358,7 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
       m.changes.length ? h('p', {}, h('span', { class: 'flag warn' }, 'Changed since stored: ' + m.changes.map((c) => c.file + ' (' + c.change + ')').join(', ')), ' ', h('span', { class: 'small' }, 'Read what changed below, then mark it still true or outdated.')) : null,
       h('div', { class: 'md' }, narrative(m.narrative)),
       m.changes.length ? h('div', { class: 'section', id: 'diffs' }, h('h3', {}, 'What changed since it was stored'), h('p', { class: 'small' }, 'Loading the diff…')) : null,
+      m.versions ? h('div', { class: 'section', id: 'history' }, h('h3', {}, 'History'), h('p', { class: 'small' }, 'Loading earlier versions…')) : null,
       list('Facts', m.facts),
       m.files && m.files.length ? h('div', { class: 'section' }, h('h3', {}, 'Files'), h('ul', { class: 'files' }, ...m.files.map((f) => h('li', {}, f)))) : null,
       m.concepts && m.concepts.length ? h('div', { class: 'section' }, h('h3', {}, 'Concepts'), h('div', { class: 'chips' }, ...m.concepts.map((c) => h('span', { class: 'flag' }, c)))) : null,
@@ -1370,6 +1374,7 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
       h('div', { class: 'section' }, h('h3', {}, 'About'), h('dl', { class: 'kv' }, ...kv.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))));
     fill($('dactions'), ...actions.filter(Boolean));
     if (m.changes.length) loadDiffs(m);
+    if (m.versions) loadHistory(m);
     d.scrollTop = 0;
   }
 
@@ -1393,6 +1398,40 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
     };
     fill(box, h('h3', {}, 'What changed since it was stored'),
       res.files.length ? res.files.map(file) : h('p', { class: 'small' }, res.note || 'The files match again; nothing to show.'));
+  }
+
+  // Earlier versions of the memory, newest first; each shows what the change that replaced it did, and can be restored.
+  async function loadHistory(m) {
+    let res;
+    try { res = await api('/api/memory/history', { id: m.id }); } catch (e) { res = { versions: [], error: e.message }; }
+    const box = $('history');
+    if (!box || !S.current || S.current.id !== m.id) return;
+    const earlier = res.versions.filter((v) => !v.current);
+    const at = (iso) => new Date(iso).toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const setList = (label, d) => d && (d.added.length || d.removed.length)
+      ? h('p', { class: 'small' }, label + ': ', ...d.added.map((x) => h('span', { class: 'flag ok' }, '+ ' + x)), ...d.removed.map((x) => h('span', { class: 'flag warn' }, '− ' + x))) : null;
+    const version = (v) => {
+      const c = v.next;
+      const restore = h('button', { class: 'btn small', onclick: async () => {
+        try { await api('/api/memory/restore', null, { id: m.id, revision: v.revision }); toast('Restored revision ' + v.revision + '; the replaced version is kept'); await refresh(m.id); }
+        catch (e) { toast(e.message); }
+      } }, 'Restore this version');
+      return h('details', { class: 'fdiff version' },
+        h('summary', {}, h('span', { class: 'mono' }, 'rev ' + v.revision), h('span', { class: 'small' }, at(v.validFrom) + ' → ' + at(v.replacedAt)),
+          h('span', { class: 'flag' }, v.changeLabel), v.note ? h('span', { class: 'small' }, v.note) : null),
+        h('div', { class: 'vbody' },
+          h('p', { class: 'vtitle' }, typeTag(v.type), ' ', v.title),
+          c && c.fields.length ? h('p', { class: 'small' }, 'Then changed: ' + c.fields.map((f) => f.field + ' "' + f.from + '" → "' + f.to + '"').join('; ')) : null,
+          c && c.narrative.length
+            ? h('pre', { class: 'diff wrap' }, ...c.narrative.map((l) => h('span', { class: 'dl ' + (l.op === '+' ? 'add' : l.op === '-' ? 'del' : 'ctx') }, l.op + ' ' + (l.text || ' '))))
+            : h('p', { class: 'small' }, 'The narrative did not change in the next version.'),
+          setList('Facts', c && c.facts), setList('Files', c && c.files), setList('Concepts', c && c.concepts),
+          h('div', { class: 'review' }, restore)));
+    };
+    fill(box, h('h3', {}, 'History'),
+      res.error ? h('p', { class: 'small' }, res.error)
+        : h('p', { class: 'small' }, plural(earlier.length, 'earlier version', 'earlier versions') + ', newest first. Each shows what the next change did (red: removed, green: added). Restoring keeps the version it replaces.'),
+      ...earlier.map(version));
   }
 
   // Edit a memory in place: title, type, area, narrative, facts, files and concepts. A candidate can be kept as it is saved.

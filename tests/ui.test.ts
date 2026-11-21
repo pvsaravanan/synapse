@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type DB } from '../src/db.js';
 import { proposeLongTerm } from '../src/longterm.js';
 import { detectProject } from '../src/project.js';
-import { getObservation, listObservations, recordAccess, storeObservation } from '../src/store.js';
+import { editObservation, getObservation, listObservations, recordAccess, storeObservation } from '../src/store.js';
 import { recordDeliveries } from '../src/deliveries.js';
 import { startSession } from '../src/sessions.js';
 import { UI_PAGE } from '../src/ui-page.js';
@@ -225,6 +225,30 @@ describe('synapse ui server', () => {
     const m = (await api('/api/memory?id=' + mem.id)).body;
     expect(m.shownTo).toEqual([expect.objectContaining({ sessionId: s.id, agent: 'claude-code', channel: 'search', query: 'rate limit', rank: 1 })]);
   });
+});
+
+it('lists a memory\'s earlier versions and restores one', async () => {
+  const db2 = openDatabase(':memory:');
+  const d2 = mkdtempSync(path.join(os.tmpdir(), 'syn-ui-hist-'));
+  const p2 = detectProject(d2);
+  const o = storeObservation(db2, { projectId: p2.id, entityName: 'auth', type: 'decision', title: 'Sessions in cookies', narrative: 'Signed cookies.\n7 day expiry.' }).observation;
+  editObservation(db2, o.id, { narrative: 'Signed cookies.\n30 day expiry.' });
+  const started = await startUi({ db: db2, project: p2 });
+  const tok = new URL(started.url).hash.replace('#t=', '');
+  const root = started.url.replace(/\/#t=.*$/, '');
+  const call = async (p: string, post?: unknown) => (await fetch(root + p, post === undefined ? { headers: { 'x-synapse-token': tok } }
+    : { method: 'POST', headers: { 'x-synapse-token': tok, 'content-type': 'application/json' }, body: JSON.stringify(post) })).json() as Promise<any>;
+  try {
+    expect((await call('/api/memory?id=' + o.id)).versions).toBe(1);
+    const { versions } = await call('/api/memory/history?id=' + o.id);
+    expect(versions.map((v: { revision: number; current: boolean }) => [v.revision, v.current])).toEqual([[2, true], [1, false]]);
+    expect(versions[1]).toMatchObject({ changeLabel: 'edited', next: { narrative: expect.arrayContaining([{ op: '-', text: '7 day expiry.' }, { op: '+', text: '30 day expiry.' }]) } });
+    expect(await call('/api/memory/restore', { id: o.id, revision: 1 })).toMatchObject({ ok: true, revision: 3 });
+    expect(getObservation(db2, o.id)!.narrative).toBe('Signed cookies.\n7 day expiry.');
+    expect((await call('/api/memory/restore', { id: o.id, revision: 9 })).error).toMatch(/no kept revision 9/);
+  } finally {
+    await new Promise<void>((r) => started.server.close(() => r()));
+  }
 });
 
 it('page script parses (the page is a String.raw template)', () => {

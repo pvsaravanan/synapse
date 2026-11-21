@@ -23,6 +23,8 @@ Usage: synapse <command> [options]
   store --type T --entity E --title "..." --narrative "..." [--topic K] [--facts a,b] [--files a,b]
   detail <id...>                  Show full memories
   timeline <id>                   Show memories around an id
+  history <id> [--at DATE | --rev N] [--diff] [--restore N]
+                                  Earlier versions of a memory, the one that held at a date, or restore one
   resolve <id...> [--status resolved|archived|active]
   stale [--limit N]               Memories whose files changed since they were stored
   verify <id...>                  Mark memories checked against current code (re-records file hashes)
@@ -79,7 +81,7 @@ async function main(): Promise<void> {
       count: { type: 'string' }, since: { type: 'string' }, summary: { type: 'string' }, archive: { type: 'boolean' },
       out: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, scope: { type: 'string' }, text: { type: 'string' },
       applies: { type: 'string' }, evidence: { type: 'string' }, reason: { type: 'string' }, state: { type: 'string' }, query: { type: 'string' },
-      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, event: { type: 'string' }, fix: { type: 'boolean' }, port: { type: 'string' }, open: { type: 'boolean' }, 'allow-tools': { type: 'boolean' }, 'no-instructions': { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, file: { type: 'string' }, auto: { type: 'boolean' }, k: { type: 'string' }, keyword: { type: 'boolean' }, json: { type: 'boolean' }, memory: { type: 'string' },
+      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, event: { type: 'string' }, fix: { type: 'boolean' }, port: { type: 'string' }, open: { type: 'boolean' }, 'allow-tools': { type: 'boolean' }, 'no-instructions': { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, file: { type: 'string' }, auto: { type: 'boolean' }, k: { type: 'string' }, keyword: { type: 'boolean' }, json: { type: 'boolean' }, memory: { type: 'string' }, at: { type: 'string' }, rev: { type: 'string' }, diff: { type: 'boolean' }, restore: { type: 'string' },
     },
   });
   const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : undefined);
@@ -390,6 +392,26 @@ async function main(): Promise<void> {
         e.setEmbedEnabled(db, true);
         console.log(`Meaning-based search is on. Embedded ${n} memor${n === 1 ? 'y' : 'ies'} of ${project.id} in ${((Date.now() - started) / 1000).toFixed(1)}s; new and edited ones are embedded when they are next searched.`);
       }
+      break;
+    }
+    case 'history': {
+      const hst = await import('./history.js');
+      const id = Number(String(pos[0] ?? '').replace(/^#/, ''));
+      if (!Number.isInteger(id) || id <= 0) throw new Error('Usage: synapse history <id> [--at DATE | --rev N] [--diff] [--restore N]');
+      const versions = hst.memoryHistory(db, id);
+      if (!versions) throw new Error(`No memory #${id}`);
+      if (str('restore')) {
+        const o = hst.restoreVersion(db, id, Number(str('restore')), project.rootPath);
+        console.log(`Restored #${id} to revision ${str('restore')}; it is now revision ${o.revisionCount} (the replaced version is kept: synapse history ${id}).`);
+      } else if (str('at')) {
+        const v = hst.versionAt(db, id, str('at')!);
+        if (!v) throw new Error(`#${id} did not exist yet on ${str('at')} (or the date is not valid)`);
+        console.log(hst.formatVersion(id, v));
+      } else if (str('rev')) {
+        const v = versions.find((x) => x.revision === Number(str('rev')));
+        if (!v) throw new Error(`#${id} has no kept revision ${str('rev')}; kept: ${versions.map((x) => x.revision).join(', ')}`);
+        console.log(hst.formatVersion(id, v));
+      } else console.log(hst.formatHistory(id, versions, { diff: Boolean(v.diff) }));
       break;
     }
     case 'audit': {

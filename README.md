@@ -31,6 +31,7 @@ Full documentation: [docs/](docs/README.md) — [getting started](docs/getting-s
 - **Local web UI** (`synapse ui`): browse, search and curate memory, edit and merge memories, see which memories get read (and promote them) or go unread (and prune them), explore it as a node map of memories, components and files, check "changed since" flags against the git diff of what changed, qualify candidates and review long-term proposals.
 - **Reviewed long-term memory:** facts, procedures and events approved with a recorded reason. Only approved items reach the brief, and `user`-scope items carry across projects.
 - **Meaning-based search (optional):** `synapse embed` downloads a small embedding model once and runs it locally, so "crash" finds a memory that says "panics". Keyword search stays the default and the fallback.
+- **Memory history:** revising a memory keeps the version it replaced, so `synapse history <id>` shows how a decision changed, `--at DATE` what it said then, and `--restore N` brings one back.
 - **What each session was shown:** every memory that reached an agent (brief, search, detail, file note) is logged per session with its rank and whether it was stale, so `synapse audit` or the Sessions view in `synapse ui` answers "why did the agent do that?"
 - **Retrieval benchmark:** `synapse bench` scores search (hit@k, MRR) on your own memories, keyword vs meaning, from your own query file (`.synapse/bench.jsonl`).
 - **Team memory through git:** `synapse team export` writes curated memories to `.synapse/memory.jsonl` (reviewable, one line each); teammates and CI agents load it automatically at setup and session start.
@@ -117,6 +118,7 @@ Lite mode (default):
 | `synapse_project_context` | First step for non-trivial work: a task-lensed brief |
 | `synapse_search` | Compact index of matching memories (`scope: "global"` for all projects) |
 | `synapse_detail` / `synapse_timeline` | Expand a memory / see what happened around it |
+| `synapse_history` | Earlier versions of a memory, or the version that held at a date |
 | `synapse_store` / `synapse_store_reasoning` | Save a memory / the *why* behind a decision |
 | `synapse_resolve` | Mark memories done or obsolete |
 | `synapse_feedback` | helpful / verified / conflicted / outdated / corrected → adjusts ranking; `verified` clears a `changed since` flag |

@@ -9,6 +9,7 @@ import { VERSION } from './config.js';
 import type { DB } from './db.js';
 import { memoryDiffs } from './diff.js';
 import { changesFor, staleMemories } from './freshness.js';
+import { changeLabel, memoryHistory, restoreVersion, revisionCounts, versionChanges } from './history.js';
 import { deliveryCounts, deliveryFlags, memoryDeliveries, sessionDeliveries } from './deliveries.js';
 import { listLongTerm, promoteToLongTerm, reviewLongTerm, LT_KINDS, LT_SCOPES, LT_STATES } from './longterm.js';
 import { hybridSearch } from './embed.js';
@@ -152,6 +153,7 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
         revisionCount: o.revisionCount, commitHash: o.commitHash, relatedCommits: o.relatedCommits, relatedEntities: o.relatedEntities,
         progress: o.progress, valueCategory: o.valueCategory, access: access ?? null, feedback, uid: o.uid ?? null,
         replacedBy: replacedBy ? { id: replacedBy.id, title: replacedBy.title } : null, replaces,
+        versions: revisionCounts(db, [o.id]).get(o.id) ?? 0,
         shownTo: memoryDeliveries(db, o.id, 20).map((d) => ({
           sessionId: d.sessionId, agent: d.agent, channel: d.channel, query: d.query, rank: d.rank, createdAt: d.createdAt, flags: deliveryFlags(d),
         })),
@@ -185,6 +187,12 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
       const changes = changesOf(p, shown);
       return { ...graph, truncated: obs.length > limit, memories: shown.map((o) => summary(o, changes.get(o.id))) };
     },
+    '/api/memory/history': (u) => {
+      const versions = memoryHistory(db, int(u.searchParams.get('id'), 'id'));
+      if (!versions) throw new HttpError(404, 'Memory not found');
+      // Each earlier version with what the change that replaced it did (compared with the next newer version).
+      return { versions: versions.map((v, i) => ({ ...v, changeLabel: v.change ? changeLabel(v.change) : null, next: i > 0 ? versionChanges(v, versions[i - 1]) : null })) };
+    },
     '/api/memory/diff': (u) => {
       const o = getObservation(db, int(u.searchParams.get('id'), 'id'));
       if (!o) throw new HttpError(404, 'Memory not found');
@@ -217,6 +225,16 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
       return { ok: true };
     },
     '/api/memory/qualify': (b) => ({ ok: promoteObservation(db, int(b.id, 'id')) }),
+    '/api/memory/restore': (b) => {
+      const o = getObservation(db, int(b.id, 'id'));
+      if (!o) throw new HttpError(404, 'Memory not found');
+      try {
+        const restored = restoreVersion(db, o.id, int(b.revision, 'revision'), o.projectId === project.id ? project.rootPath : undefined);
+        return { ok: true, id: restored.id, revision: restored.revisionCount };
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+    },
     '/api/memory/edit': (b) => {
       const o = getObservation(db, int(b.id, 'id'));
       if (!o) throw new HttpError(404, 'Memory not found');

@@ -162,6 +162,26 @@ CREATE TABLE IF NOT EXISTS project_identity (
   createdAt TEXT NOT NULL
 );
 
+-- Earlier versions of curated memories (history.ts): the content a change replaced, and what replaced it.
+CREATE TABLE IF NOT EXISTS observation_revisions (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  observationId INTEGER NOT NULL,
+  revision      INTEGER NOT NULL,
+  type          TEXT NOT NULL,
+  entityName    TEXT NOT NULL,
+  title         TEXT NOT NULL,
+  narrative     TEXT NOT NULL,
+  facts         TEXT NOT NULL DEFAULT '[]',
+  filesModified TEXT NOT NULL DEFAULT '[]',
+  concepts      TEXT NOT NULL DEFAULT '[]',
+  validFrom     TEXT NOT NULL,
+  replacedAt    TEXT NOT NULL,
+  change        TEXT NOT NULL,
+  sessionId     TEXT,
+  note          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_revisions_observation ON observation_revisions(observationId, id);
+
 -- What each session was shown (deliveries.ts): one row per memory or long-term item per brief, search, detail or file note.
 CREATE TABLE IF NOT EXISTS deliveries (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { hooksInstalled, toolMode, VERSION, type ToolMode } from './config.js';
 import { teamAutoImport } from './team.js';
 import { buildProjectContext, recordBrief } from './context.js';
+import { formatHistory, formatVersion, memoryHistory, versionAt } from './history.js';
 import { pruneDeliveries, recordDeliveries, revisionOf } from './deliveries.js';
 import { getDb, openDatabase, type DB } from './db.js';
 import { formatDetail, formatIndex, formatTimeline, indexLine } from './disclosure.js';
@@ -414,6 +415,34 @@ export function createServer(opts: ServerOptions = {}): McpServer {
       inputSchema: { anchorId: z.number().int(), before: z.number().int().min(0).max(20).optional(), after: z.number().int().min(0).max(20).optional() },
     },
     async ({ anchorId, before, after }) => text(formatTimeline(timeline(db, anchorId, before ?? 3, after ?? 3))),
+  );
+
+  server.registerTool(
+    'synapse_history',
+    {
+      title: 'Memory History',
+      description:
+        'Earlier versions of a memory: how a decision or explanation changed over time, and what each change did. ' +
+        'Pass `at` (ISO date) to see what the memory said then, or `revision` for one version in full.',
+      inputSchema: {
+        id: z.number().int(),
+        at: z.string().optional().describe('ISO date or date-time: the version that held then'),
+        revision: z.number().int().optional().describe('Show this revision in full'),
+      },
+    },
+    async ({ id, at, revision }) => {
+      const versions = memoryHistory(db, id);
+      if (!versions) return fail(`No memory #${id}`);
+      if (at) {
+        const v = versionAt(db, id, at);
+        return v ? text(formatVersion(id, v)) : fail(`#${id} did not exist yet on ${at} (or the date is not valid)`);
+      }
+      if (revision != null) {
+        const v = versions.find((x) => x.revision === revision);
+        return v ? text(formatVersion(id, v)) : fail(`#${id} has no kept revision ${revision}; kept: ${versions.map((x) => x.revision).join(', ')}`);
+      }
+      return text(formatHistory(id, versions, { diff: true }));
+    },
   );
 
   server.registerTool(
