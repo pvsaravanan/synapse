@@ -1,6 +1,6 @@
 import type { DB } from './db.js';
 import { relevance } from './retention.js';
-import { getObservations, listObservations, rowToObservation, scoringContexts } from './store.js';
+import { branchClause, getObservations, listObservations, rowToObservation, scoringContexts, visibleOn } from './store.js';
 import type { Observation, SearchHit, SearchOptions } from './types.js';
 
 /** Small domain synonym table so "bug" also finds "fix"/"error" memories. */
@@ -121,6 +121,11 @@ export function search(db: DB, opts: SearchOptions): SearchHit[] {
       where.push('o.entityName = ?');
       params.push(opts.entityName);
     }
+    const scope = branchClause(opts.branch, 'o');
+    if (scope) {
+      where.push(scope.sql);
+      params.push(...scope.params);
+    }
     params.push(Math.max(limit * 8, 100));
     const sql = `SELECT o.*, bm25(observations_fts, 2.0, 5.0, 1.0, 2.0, 1.5, 3.0) AS rank
       FROM observations_fts JOIN observations o ON o.id = observations_fts.rowid
@@ -145,6 +150,7 @@ export function search(db: DB, opts: SearchOptions): SearchHit[] {
       type: types,
       since: opts.since,
       entityName: opts.entityName,
+      branch: opts.branch,
       limit: Math.max(limit * 8, 100),
     }).map((obs) => ({ obs, lex: 0 }));
   }
@@ -156,7 +162,8 @@ export function search(db: DB, opts: SearchOptions): SearchHit[] {
     const related = [...sem.sims].filter(([id, v]) => v >= sem.cut && !have.has(id)).map(([id]) => id);
     const extra = getObservations(db, related).filter((o) =>
       (!opts.projectId || o.projectId === opts.projectId) && (status === 'all' || o.status === status) && (!types?.length || types.includes(o.type))
-      && (!opts.since || (o.updatedAt ?? o.createdAt) >= opts.since) && (!opts.entityName || o.entityName === opts.entityName));
+      && (!opts.since || (o.updatedAt ?? o.createdAt) >= opts.since) && (!opts.entityName || o.entityName === opts.entityName)
+      && visibleOn(db, o, opts.branch));
     rows = [...rows, ...extra.map((obs) => ({ obs, lex: 0 }))];
   }
   if (fts && sem) rows = rows.map((r) => ({ ...r, lex: blendSemantic(r.lex, sem.sims.get(r.obs.id), sem.cut) })).filter((r) => r.lex > 0);
@@ -183,6 +190,7 @@ function likeFallback(db: DB, opts: SearchOptions, types?: string[]): { obs: Obs
     type: types,
     since: opts.since,
     entityName: opts.entityName,
+    branch: opts.branch,
     limit: 2000,
   });
   return pool

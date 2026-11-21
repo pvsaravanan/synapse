@@ -144,6 +144,7 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .flag { font-size: 11.5px; border-radius: 999px; padding: 1px 8px; background: var(--pill); color: var(--muted); white-space: nowrap; }
 .flag.warn { background: var(--warn-bg); color: var(--warn); }
 .flag.ok { background: var(--ok-bg); color: var(--ok); }
+.flag.branch { font-family: var(--mono); }
 
 .detail { background: var(--panel); border: 1.5px solid var(--line); border-radius: 26px; min-width: 0; overflow-wrap: anywhere; }
 .detail h2 { font-family: var(--serif); font-weight: 400; font-size: 30px; line-height: 1.12; letter-spacing: -0.015em; margin: 10px 0 16px; }
@@ -610,6 +611,7 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
     if (m.changes.length) flags.push(h('span', { class: 'flag warn', title: m.changes.map((c) => c.file + ' ' + c.change).join(', ') }, 'changed since: ' + m.changes.map((c) => c.file).slice(0, 2).join(', ') + (m.changes.length > 2 ? ' +' + (m.changes.length - 2) : '')));
     if (m.admission === 'candidate' && S.view !== 'candidates') flags.push(h('span', { class: 'flag' }, 'candidate'));
     if (m.status !== 'active') flags.push(h('span', { class: 'flag' }, m.status));
+    if (m.branch) flags.push(h('span', { class: 'flag branch', title: 'Shown on this branch only until it merges' }, 'branch ' + m.branch));
     if (m.source !== 'agent' && !(S.view === 'candidates' && m.source === 'hook')) flags.push(h('span', { class: 'flag' }, m.source));
     return h('div', { class: 'row' + (bulk ? ' bulkrow' : '') + (bulk && S.picked.has(m.id) ? ' picked' : '') + (S.selected === m.id ? ' sel' : ''), 'data-id': m.id, tabindex: 0, role: 'button',
       onclick: () => select(m.id), onkeydown: (e) => { if (e.key === 'Enter') select(m.id); } },
@@ -1334,12 +1336,14 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
     if (m.admission === 'candidate') actions.push(act('Keep (qualify)', '/api/memory/qualify', {}, m.changes.length ? '' : 'primary', 'Qualified'));
     if (m.status === 'active') actions.push(act('Resolve', '/api/memory/status', { status: 'resolved' }, '', 'Resolved'), act('Archive', '/api/memory/status', { status: 'archived' }, 'danger', 'Archived'));
     else actions.push(act('Reopen', '/api/memory/status', { status: 'active' }, '', 'Reopened'));
+    if (m.branch) actions.push(act('Make project-wide', '/api/memory/scope', { scope: 'project' }, '', 'Now shown on every branch'));
     if (!m.changes.length && m.status === 'active') actions.push(act('Helpful', '/api/memory/feedback', { signal: 'helpful' }, '', 'Thanks, noted'));
     actions.push(h('span', { class: 'spacer' }),
       h('button', { class: 'btn', title: 'Fix the title, text, type or files (e)', onclick: () => renderEditor(m) }, 'Edit'),
       m.status === 'active' ? h('button', { class: 'btn', title: 'Fold duplicates into this memory', onclick: () => renderMerge(m) }, 'Merge…') : null);
     const kv = [
       ['Area', m.entity], ['Status', m.status + (m.admission === 'candidate' ? ' · candidate' : '')], ['Source', m.source],
+      m.branch ? ['Branch', h('span', {}, h('span', { class: 'mono' }, m.branch), ' · shown on this branch only, project-wide once it merges')] : null,
       ['Created', new Date(m.createdAt).toLocaleString()], m.updatedAt ? ['Updated', new Date(m.updatedAt).toLocaleString() + (m.revisionCount > 1 ? ' · revision ' + m.revisionCount : '')] : null,
       m.topicKey ? ['Topic', h('span', { class: 'mono' }, m.topicKey)] : null, m.sessionId ? ['Session', h('span', { class: 'mono' }, m.sessionId.slice(0, 8))] : null,
       m.commitHash ? ['Commit', h('span', { class: 'mono' }, m.commitHash.slice(0, 10))] : null,
@@ -1347,6 +1351,7 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
     ].filter(Boolean);
     const list = (title, items) => items && items.length ? h('div', { class: 'section' }, h('h3', {}, title), h('ul', {}, ...items.map((x) => h('li', {}, inline(x))))) : null;
     const flags = [m.status !== 'active' ? h('span', { class: 'flag' }, m.status) : null, m.admission === 'candidate' ? h('span', { class: 'flag' }, 'candidate') : null,
+      m.branch ? h('span', { class: 'flag branch' }, 'branch ' + m.branch) : null,
       m.source !== 'agent' ? h('span', { class: 'flag' }, m.source === 'hook' ? 'captured by a hook' : m.source === 'team' ? 'from teammates' : m.source === 'git' ? 'from git' : m.source) : null, h('span', { class: 'flag' }, m.entity)].filter(Boolean);
     const copyId = h('button', { class: 'btn small idbtn mono', title: 'Copy the id', onclick: async () => {
       try { await navigator.clipboard.writeText(String(m.id)); toast('Copied #' + m.id); } catch { toast('#' + m.id); }

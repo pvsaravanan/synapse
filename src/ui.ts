@@ -9,6 +9,7 @@ import { VERSION } from './config.js';
 import type { DB } from './db.js';
 import { memoryDiffs } from './diff.js';
 import { changesFor, staleMemories } from './freshness.js';
+import { makeProjectWide } from './branch.js';
 import { changeLabel, memoryHistory, restoreVersion, revisionCounts, versionChanges } from './history.js';
 import { deliveryCounts, deliveryFlags, memoryDeliveries, sessionDeliveries } from './deliveries.js';
 import { listLongTerm, promoteToLongTerm, reviewLongTerm, LT_KINDS, LT_SCOPES, LT_STATES } from './longterm.js';
@@ -52,6 +53,7 @@ function summary(o: Observation, changes?: { file: string; change: string }[]) {
   return {
     id: o.id, type: o.type, entity: o.entityName, title: o.title, status: o.status, source: o.source, admission: o.admissionState,
     createdAt: o.createdAt, updatedAt: o.updatedAt, files: o.filesModified, sessionId: o.sessionId, tokens: o.tokens, changes: changes ?? [],
+    branch: o.branch ?? null,
   };
 }
 
@@ -225,6 +227,12 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
       return { ok: true };
     },
     '/api/memory/qualify': (b) => ({ ok: promoteObservation(db, int(b.id, 'id')) }),
+    '/api/memory/scope': (b) => {
+      const o = getObservation(db, int(b.id, 'id'));
+      if (!o) throw new HttpError(404, 'Memory not found');
+      if (b.scope !== 'project') throw new HttpError(400, 'scope must be "project"');
+      return { ok: true, id: makeProjectWide(db, o.id).id };
+    },
     '/api/memory/restore': (b) => {
       const o = getObservation(db, int(b.id, 'id'));
       if (!o) throw new HttpError(404, 'Memory not found');

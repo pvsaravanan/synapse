@@ -24,6 +24,7 @@ import { buildProjectContext } from './context.js';
 import { getMeta, setMeta, type DB } from './db.js';
 import { consolidateSession } from './consolidate.js';
 import { pruneDeliveries } from './deliveries.js';
+import { refreshBranches } from './branch.js';
 import { archiveStaleCandidates } from './consolidate.js';
 import { clearFileNotes, fileNotes, filesInCommand, notedFiles, projectRelative, stripHeredocs } from './file-notes.js';
 import { isIgnored } from './ignore.js';
@@ -461,6 +462,7 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
     case 'SessionStart': {
       // A pull may have brought teammates' memories: load the team file before the brief is built (never fatal).
       try { teamAutoImport(db, project); } catch { /* a bad team file must not break the session */ }
+      refreshBranches(db, project); // merged branches' memories become project-wide before the brief
       const mode = hookInjectMode();
       if (mode === 'silent') return {};
       const hint = 'Synapse memory is available: use synapse_search / synapse_project_context for prior decisions, gotchas and fixes; synapse_store to save durable learnings.';

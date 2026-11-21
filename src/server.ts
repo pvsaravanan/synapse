@@ -3,6 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { hooksInstalled, toolMode, VERSION, type ToolMode } from './config.js';
 import { teamAutoImport } from './team.js';
+import { refreshBranches, visibleBranch } from './branch.js';
 import { buildProjectContext, recordBrief } from './context.js';
 import { formatHistory, formatVersion, memoryHistory, versionAt } from './history.js';
 import { pruneDeliveries, recordDeliveries, revisionOf } from './deliveries.js';
@@ -107,6 +108,10 @@ export function approvalRefusal(client: string, env: NodeJS.ProcessEnv = process
 /** Equal after trimming and collapsing whitespace, so a re-wrapped copy of the text still matches. */
 const sameText = (a: string, b: string) => a.replace(/\s+/g, ' ').trim() === b.replace(/\s+/g, ' ').trim();
 
+/** After a store on a feature branch: say where the memory lives. */
+const branchNote = (o: { branch?: string }) =>
+  o.branch ? `\nOn branch ${o.branch}: shown on this branch only, project-wide once it merges (scope "project" makes it project-wide now).` : '';
+
 const USAGE_HINT = [
   'Synapse is this project\'s memory, shared across sessions and agents. Current code and the user\'s request win over memory.',
   '- Before non-trivial work, call synapse_project_context with the task. Search before re-investigating a past bug or decision.',
@@ -137,6 +142,8 @@ export function createServer(opts: ServerOptions = {}): McpServer {
   const hooks = opts.hooks ?? hooksInstalled();
   // Teammates' memories from the repo's .synapse/memory.jsonl, if it changed since the last load (never fatal).
   try { teamAutoImport(db, project); } catch { /* a bad team file must not stop the server */ }
+  // Branches merged since the last check: their memories become project-wide (never fatal).
+  refreshBranches(db, project);
 
   // Without hooks, the server stands in for them: the brief goes into its instructions (shown at session start by
   // clients that support them) or onto the first tool result, and one session spans the server process.
@@ -293,12 +300,14 @@ export function createServer(opts: ServerOptions = {}): McpServer {
           .optional(),
         relatedCommits: z.array(z.string()).optional(),
         relatedEntities: z.array(z.string()).optional(),
+        scope: z.enum(['branch', 'project']).optional()
+          .describe('On a feature branch, memories stay on it until it merges (default). "project" for what holds on every branch: tooling, environment, how main works'),
       },
     },
     async (args) => {
       const r = storeObservation(db, { ...args, projectId: project.id, sessionId: sessionId(), source: 'agent', rootPath: project.rootPath });
       const verb = { created: 'Stored', 'updated-topic': 'Updated topic', 'merged-duplicate': 'Merged into existing' }[r.action];
-      return text(`${verb} ${indexLine(r.observation)}`);
+      return text(`${verb} ${indexLine(r.observation)}${branchNote(r.observation)}`);
     },
   );
 
@@ -317,6 +326,8 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         filesModified: z.array(z.string()).optional(),
         relatedCommits: z.array(z.string()).optional(),
         topicKey: z.string().optional(),
+        scope: z.enum(['branch', 'project']).optional()
+          .describe('On a feature branch, memories stay on it until it merges (default). "project" for what holds on every branch: tooling, environment, how main works'),
       },
     },
     async (a) => {
@@ -340,8 +351,9 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         sessionId: sessionId(),
         concepts: ['reasoning'],
         rootPath: project.rootPath,
+        scope: a.scope,
       });
-      return text(`Stored reasoning ${indexLine(r.observation)}`);
+      return text(`Stored reasoning ${indexLine(r.observation)}${branchNote(r.observation)}`);
     },
   );
 
@@ -366,7 +378,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     async (a) => {
       const global = a.scope === 'global';
       // Keywords, plus meaning when embeddings are on (synapse embed); keyword-only otherwise.
-      const hits = await hybridSearch(db, { ...a, projectId: global ? undefined : project.id, limit: a.limit ?? 10 });
+      const hits = await hybridSearch(db, { ...a, projectId: global ? undefined : project.id, limit: a.limit ?? 10, branch: global ? undefined : visibleBranch(project) });
       if (hits.length === 0) {
         const stats = projectStats(db, global ? undefined : project.id);
         const active = stats.byStatus.active ?? 0;
@@ -489,6 +501,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         project = resolveProject(db, projectRoot);
         if (!hooks) tracker = new WorktreeTracker(project.rootPath);
       }
+      refreshBranches(db, project);
       const s = startSession(db, project.id, { agent: agent ?? (clientName() || undefined) });
       if (!hooks) adopt(s.id);
       const prev = recentSessions(db, project.id, 3).filter((p) => p.id !== s.id);

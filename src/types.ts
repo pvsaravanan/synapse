@@ -72,6 +72,8 @@ export interface Observation {
   fileHashes: Record<string, string>;
   /** Stable id once shared through the repo's team memory file. */
   uid?: string;
+  /** The feature branch this memory belongs to until that branch merges; undefined = project-wide. */
+  branch?: string;
 }
 
 export interface StoreInput {
@@ -94,6 +96,11 @@ export interface StoreInput {
   valueCategory?: ValueCategory;
   /** Project root: when given, the named files are hashed so later changes flag the memory as possibly outdated. */
   rootPath?: string;
+  /**
+   * 'branch' (default): on a feature branch, the memory belongs to that branch until it merges. 'project': it holds
+   * on every branch. Needs rootPath to know the branch.
+   */
+  scope?: 'branch' | 'project';
 }
 
 export type StoreAction = 'created' | 'updated-topic' | 'merged-duplicate';
@@ -148,6 +155,8 @@ export interface SearchOptions {
   entityName?: string;
   /** Optional token budget for the compact index. */
   maxTokens?: number;
+  /** Visible on this branch (string), project-wide only (null), or every branch (undefined). */
+  branch?: string | null;
   /**
    * From embed.ts: the query's cosine similarity to each embedded memory, and the cut above which a memory counts as
    * related. Related memories gain score (and join the results); keyword matches the model calls unrelated lose some.

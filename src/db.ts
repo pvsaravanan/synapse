@@ -162,6 +162,16 @@ CREATE TABLE IF NOT EXISTS project_identity (
   createdAt TEXT NOT NULL
 );
 
+-- Branches that have memories scoped to them (branch.ts): open until merged (memories become project-wide) or ended.
+CREATE TABLE IF NOT EXISTS branch_scopes (
+  projectId TEXT NOT NULL,
+  branch    TEXT NOT NULL,
+  lastHead  TEXT,
+  state     TEXT NOT NULL DEFAULT 'open',
+  updatedAt TEXT NOT NULL,
+  PRIMARY KEY (projectId, branch)
+);
+
 -- Earlier versions of curated memories (history.ts): the content a change replaced, and what replaced it.
 CREATE TABLE IF NOT EXISTS observation_revisions (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -275,6 +285,9 @@ function migrate(db: DB): void {
   // A stable id for memories shared through the repo's .synapse/memory.jsonl (local ids differ per machine).
   if (!cols.has('uid')) addColumn(db, 'ALTER TABLE observations ADD COLUMN uid TEXT');
   db.exec('CREATE INDEX IF NOT EXISTS idx_observations_uid ON observations(uid)');
+  // The feature branch a memory belongs to until the branch merges (branch.ts); NULL = project-wide.
+  if (!cols.has('branch')) addColumn(db, 'ALTER TABLE observations ADD COLUMN branch TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_observations_branch ON observations(projectId, branch)');
 }
 
 /** Hooks and MCP servers can open an old database at the same moment; whoever loses the race finds the column already there. */

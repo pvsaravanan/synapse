@@ -270,9 +270,9 @@ export function teamAutoImport(db: DB, project: ProjectInfo): TeamImport | undef
   return r;
 }
 
-/** Shared: active, curated, not git-ingested, not private. */
+/** Shared: active, curated, not git-ingested, not private, and not still scoped to a feature branch. */
 export function isShareable(o: Observation): boolean {
-  return o.status === 'active' && o.admissionState === 'qualified' && o.source !== 'git' && !o.concepts.some((c) => c.toLowerCase() === 'private');
+  return o.status === 'active' && o.admissionState === 'qualified' && o.source !== 'git' && !o.branch && !o.concepts.some((c) => c.toLowerCase() === 'private');
 }
 
 /** Machine-specific paths out, secrets out. */

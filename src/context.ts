@@ -8,6 +8,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { DB } from './db.js';
 import { indexLine, STALE_HINT } from './disclosure.js';
+import { visibleBranch } from './branch.js';
 import { recordDeliveries, revisionOf, type DeliveryItem } from './deliveries.js';
 import { changesFor } from './freshness.js';
 import { approvedForBrief, ltLine, pendingLongTermCount } from './longterm.js';
@@ -90,6 +91,9 @@ export function buildProjectContext(
   const total = (db.prepare("SELECT COUNT(*) AS n FROM observations WHERE projectId = ? AND status = 'active'").get(project.id) as { n: number }).n;
 
   const lines: string[] = [`# Synapse brief — ${project.name}`, `Task lens: ${lens.id} — ${lens.advice}`];
+  // On a feature branch, its own memories join the project-wide ones; other branches' stay out until they merge.
+  const branch = visibleBranch(project);
+  if (branch) lines.push(`Branch: ${branch}. Memories stored here stay on this branch until it merges; pass scope "project" for what holds on every branch.`);
   // Resuming a session (e.g. after compaction): its latest checkpoint leads the brief.
   const checkpoint = opts.sessionId ? latestCheckpoint(db, opts.sessionId) : undefined;
   if (checkpoint) lines.push('', '## Checkpoint', `- ${checkpoint.createdAt.slice(0, 16).replace('T', ' ')}: ${clip(checkpointText(checkpoint), 600)}`);
@@ -108,7 +112,7 @@ export function buildProjectContext(
   }
 
   const matches = task.trim()
-    ? search(db, { query: task, projectId: project.id, limit: 16 }).filter((h) => h.lexical > 0.05).map((h) => h.observation)
+    ? search(db, { query: task, projectId: project.id, limit: 16, branch }).filter((h) => h.lexical > 0.05).map((h) => h.observation)
     : [];
   // Hook-captured candidates are unreviewed logs: they still point at files, but are not listed as memories.
   const fileSources = matches.slice(0, 8);
@@ -117,7 +121,7 @@ export function buildProjectContext(
   const relevant = matches.filter((o) => o.admissionState !== 'candidate' && !promoted.has(o.id)).slice(0, 8);
 
   // Cautions: highest-relevance qualified memories of the lens' caution types.
-  const pool = listObservations(db, { projectId: project.id, type: lens.cautionTypes, includeCandidates: false, limit: 200 });
+  const pool = listObservations(db, { projectId: project.id, type: lens.cautionTypes, includeCandidates: false, limit: 200, branch });
   const ctx = scoringContexts(db, pool.map((o) => o.id));
   const relevantIds = new Set(relevant.map((o) => o.id));
   const cautions = pool
@@ -142,7 +146,7 @@ export function buildProjectContext(
 
   // When resuming, the current session is covered by its checkpoint; "Last session" means the one before.
   const sessions = recentSessions(db, project.id, 2).filter((s) => s.id !== opts.sessionId).slice(0, 1);
-  const inProgress = listObservations(db, { projectId: project.id, limit: 50, includeCandidates: false })
+  const inProgress = listObservations(db, { projectId: project.id, limit: 50, includeCandidates: false, branch })
     .filter((o) => o.progress && o.progress.status !== 'completed')
     .slice(0, 3);
 

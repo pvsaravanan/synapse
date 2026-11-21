@@ -182,6 +182,16 @@ A **read** is a memory reaching an agent: included in a brief (relevant memories
 
 Only the last read's time is kept, so "read often" counts all reads ever, shown with when the last one was. Auto-captured candidates are left out; they have their own lifecycle ([consolidation](#consolidation)).
 
+## Branch-scoped memories
+
+Work on a feature branch produces memories about code that may never reach the default branch. A memory stored while a feature branch is checked out **belongs to that branch**: briefs, `synapse_search` and file notes on that branch show it alongside the project-wide memories, and other branches don't see it.
+
+- **Merging makes them project-wide.** At session start (and when the MCP server starts), Synapse checks branches with memories. A branch whose own commits are in the default branch, by a merge commit, a fast-forward or a rebase (every commit has a patch-equivalent there), has its memories made project-wide, even if the branch was deleted after merging.
+- **Revising a project-wide topic on a branch forks it.** Storing with a `topicKey` that a project-wide memory has makes a branch copy, which stands in for it on that branch only, so the default branch's brief doesn't change before the merge. On merge, the copy's content becomes the project-wide memory's next version (the old one stays in its [history](#memory-history)), and the copy is archived pointing at it.
+- **Deleted without a merge: "ended".** Its memories stay hidden and are listed by `synapse branches` for review: `synapse branches promote <branch>` makes them project-wide, `synapse branches archive <branch>` archives them. Squash merges look like this, because the squashed commit has no link to the branch's commits.
+- **Facts that hold everywhere** (tooling, environment, how the default branch works) should be stored with `scope: "project"` (`synapse store --scope project`). One memory can be made project-wide later with `synapse branches project-wide <id>` or **Make project-wide** in `synapse ui`, where branch memories carry a branch label.
+- **The default branch** is origin's HEAD, else `main`, `master` or `trunk`, read from the repository's ref files; set `SYNAPSE_DEFAULT_BRANCH` to override it. Without a known default branch, or with a detached HEAD, nothing is branch-scoped. Branch memories aren't shared through the [team file](#team-memory) until they become project-wide.
+
 ## Memory history
 
 Revising a memory doesn't lose what it said before. Whenever a curated memory's content changes (a topic update, a near-duplicate merged into it, an edit, a merge, an update from the [team file](#team-memory), or a restore), the version it replaced is kept with when it was written, when it was replaced, what replaced it and, for agent stores, the session.

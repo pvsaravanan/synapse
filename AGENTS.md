@@ -23,7 +23,7 @@ Rebuild after changing `src/` when testing hooks or the MCP server live, because
 - `src/store.ts`, `src/db.ts`: observations, upserts and duplicate merging, schema and migrations
 - `src/context.ts`: the task-lensed project brief
 - `src/search.ts`, `src/retention.ts`: FTS ranking and relevance decay; `src/embed.ts`: optional meaning-based search (in-process embeddings); `src/bench.ts`: `synapse bench`, the retrieval benchmark
-- `src/longterm.ts`, `src/sessions.ts`, `src/freshness.ts`: reviewed long-term memory, sessions and checkpoints, file freshness; `src/deliveries.ts`: what each session was shown; `src/history.ts`: earlier versions of memories
+- `src/longterm.ts`, `src/sessions.ts`, `src/freshness.ts`: reviewed long-term memory, sessions and checkpoints, file freshness; `src/deliveries.ts`: what each session was shown; `src/history.ts`: earlier versions of memories; `src/branch.ts`: branch-scoped memories
 - `src/ui.ts`, `src/ui-page.ts`: `synapse ui`, the local web page (server plus one self-contained HTML page)
 - `src/team.ts`: team memory shared through the repo's `.synapse/memory.jsonl`
 - `src/consolidate.ts`, `src/ignore.ts`: merging and archiving auto-captured records when a session ends; `.synapseignore`
@@ -45,7 +45,7 @@ This project uses Synapse for memory shared across sessions and agents. A brief 
 
 - **Before non-trivial work:** call `synapse_project_context` with the task, and read its "Start here" files.
 - **Before re-investigating** a bug, error or past decision: `synapse_search` first, then `synapse_detail` on relevant ids.
-- **Store as you go**, without being asked, with `synapse_store`: non-obvious bug causes and fixes (`problem-solution`), traps and environment quirks (`gotcha`), design choices (`decision`; use `synapse_store_reasoning` for the why and the rejected alternatives), and how a subsystem works (`how-it-works`). Name the files involved in `filesModified`. Use `topicKey` for topics that evolve.
+- **Store as you go**, without being asked, with `synapse_store`: non-obvious bug causes and fixes (`problem-solution`), traps and environment quirks (`gotcha`), design choices (`decision`; use `synapse_store_reasoning` for the why and the rejected alternatives), and how a subsystem works (`how-it-works`). Name the files involved in `filesModified`. Use `topicKey` for topics that evolve. On a feature branch, memories stay on that branch until it merges; pass `scope: "project"` for what holds on every branch (tooling, environment).
 - **Don't store** what the code or git history already says, routine edits, or secrets.
 - **A memory flagged "changed since: …"** names files edited after it was stored: check current code, then `synapse_feedback` with `verified` or `outdated`. Use `synapse_resolve` for memories that no longer hold.
 - **Lasting facts, procedures and user preferences:** propose with `synapse_lt_propose`. The user approves them; don't approve on their behalf.

@@ -1,3 +1,4 @@
+import { branchScope, trackBranch } from './branch.js';
 import type { DB } from './db.js';
 import { hashFile, hashFiles, type FileHashes } from './freshness.js';
 import path from 'node:path';
@@ -76,6 +77,7 @@ export function rowToObservation(row: Record<string, unknown>): Observation {
     hasCausalLanguage: Boolean(row.hasCausalLanguage),
     fileHashes: parseHashes(row.fileHashes),
     uid: (row.uid as string) ?? undefined,
+    branch: (row.branch as string) ?? undefined,
   };
 }
 
@@ -137,6 +139,31 @@ export interface ListOptions {
   since?: string;
   entityName?: string;
   includeCandidates?: boolean;
+  /** Visible on this branch (string), project-wide only (null), or every branch (undefined); see branchClause. */
+  branch?: string | null;
+}
+
+/**
+ * SQL for "visible on this branch": project-wide memories plus the branch's own, except a project-wide memory whose
+ * topic the branch revised (its branch copy stands in for it there). `alias` is the observations table's name in the
+ * query. Undefined branch: no condition (every branch).
+ */
+export function branchClause(branch: string | null | undefined, alias = 'observations'): { sql: string; params: string[] } | undefined {
+  if (branch === undefined) return undefined;
+  if (branch === null) return { sql: `${alias}.branch IS NULL`, params: [] };
+  return {
+    sql: `(${alias}.branch = ? OR (${alias}.branch IS NULL AND NOT (${alias}.topicKey IS NOT NULL AND EXISTS (SELECT 1 FROM observations sb
+      WHERE sb.projectId = ${alias}.projectId AND sb.topicKey = ${alias}.topicKey AND sb.branch = ? AND sb.status = 'active'))))`,
+    params: [branch, branch],
+  };
+}
+
+/** The same rule as branchClause, for a memory already loaded. */
+export function visibleOn(db: DB, o: Observation, branch: string | null | undefined): boolean {
+  if (branch === undefined) return true;
+  if (o.branch) return o.branch === branch;
+  if (!branch || !o.topicKey) return true;
+  return !db.prepare("SELECT 1 FROM observations WHERE projectId = ? AND topicKey = ? AND branch = ? AND status = 'active' LIMIT 1").get(o.projectId, o.topicKey, branch);
 }
 
 export function listObservations(db: DB, opts: ListOptions = {}): Observation[] {
@@ -163,6 +190,11 @@ export function listObservations(db: DB, opts: ListOptions = {}): Observation[] 
     params.push(opts.entityName);
   }
   if (opts.includeCandidates === false) where.push("admissionState = 'qualified'");
+  const scope = branchClause(opts.branch);
+  if (scope) {
+    where.push(scope.sql);
+    params.push(...scope.params);
+  }
   const sql =
     `SELECT * FROM observations ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ` +
     `ORDER BY COALESCE(updatedAt, createdAt) DESC, id DESC LIMIT ?`;
@@ -185,11 +217,22 @@ function storeObservationInner(db: DB, input: StoreInput): StoreResult {
   // Hashes of the files named now; on an update they replace the old hashes for those files.
   const hashes = input.rootPath ? hashFiles(input.rootPath, s.filesModified) : {};
   const mergeHashes = (prev: FileHashes) => JSON.stringify({ ...prev, ...hashes });
+  // On a feature branch the memory belongs to the branch (unless it holds everywhere); updates stay within a scope, so
+  // revising a project-wide topic from a branch makes a branch copy that stands in for it there until the merge.
+  const branch = input.scope === 'project' ? null : branchScope(input.rootPath) ?? null;
+  if (branch) {
+    try {
+      const tracked = db.prepare("SELECT 1 FROM branch_scopes WHERE projectId = ? AND branch = ? AND state = 'open'").get(input.projectId, branch);
+      if (!tracked) trackBranch(db, input.projectId, input.rootPath!, branch);
+    } catch {
+      /* tracking only helps merge detection later */
+    }
+  }
 
   if (s.topicKey) {
     const existing = db
-      .prepare("SELECT * FROM observations WHERE projectId = ? AND topicKey = ? AND status = 'active' ORDER BY id DESC LIMIT 1")
-      .get(input.projectId, s.topicKey) as Record<string, unknown> | undefined;
+      .prepare("SELECT * FROM observations WHERE projectId = ? AND topicKey = ? AND status = 'active' AND branch IS ? ORDER BY id DESC LIMIT 1")
+      .get(input.projectId, s.topicKey, branch) as Record<string, unknown> | undefined;
     if (existing) {
       const prev = rowToObservation(existing);
       db.prepare(
@@ -214,9 +257,9 @@ function storeObservationInner(db: DB, input: StoreInput): StoreResult {
   if (!s.topicKey) {
     const candidates = db
       .prepare(
-        "SELECT * FROM observations WHERE projectId = ? AND entityName = ? AND type = ? AND status = 'active' ORDER BY id DESC LIMIT 50",
+        "SELECT * FROM observations WHERE projectId = ? AND entityName = ? AND type = ? AND status = 'active' AND branch IS ? ORDER BY id DESC LIMIT 50",
       )
-      .all(input.projectId, s.entityName, input.type) as Record<string, unknown>[];
+      .all(input.projectId, s.entityName, input.type, branch) as Record<string, unknown>[];
     for (const row of candidates) {
       const o = rowToObservation(row);
       const sim = similarity(`${o.title} ${o.narrative}`, `${s.title} ${s.narrative}`);
@@ -248,8 +291,8 @@ function storeObservationInner(db: DB, input: StoreInput): StoreResult {
     .prepare(
       `INSERT INTO observations (projectId, entityName, type, title, narrative, facts, filesModified, concepts, tokens,
         createdAt, topicKey, sessionId, progress, source, commitHash, relatedCommits, relatedEntities, admissionState,
-        valueCategory, hasCausalLanguage, fileHashes)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        valueCategory, hasCausalLanguage, fileHashes, branch)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       input.projectId, s.entityName, input.type, s.title, s.narrative,
@@ -258,7 +301,7 @@ function storeObservationInner(db: DB, input: StoreInput): StoreResult {
       input.progress ? JSON.stringify(input.progress) : null,
       input.source ?? 'agent', input.commitHash ?? null,
       JSON.stringify(uniq(input.relatedCommits)), JSON.stringify(uniq(input.relatedEntities)),
-      input.admissionState ?? 'qualified', input.valueCategory ?? null, causal, JSON.stringify(hashes),
+      input.admissionState ?? 'qualified', input.valueCategory ?? null, causal, JSON.stringify(hashes), branch,
     );
   return { observation: getObservation(db, Number(info.lastInsertRowid))!, action: 'created' };
 }

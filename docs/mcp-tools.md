@@ -23,7 +23,7 @@ Current code and the user's request always take precedence over memory.
 
 ### `synapse_store`
 
-Store an observation. Credentials are redacted before the write.
+Store an observation. Credentials are redacted before the write. On a feature branch the memory belongs to that branch until it merges ([branch-scoped memories](concepts.md#branch-scoped-memories)); pass `scope: "project"` (also on `synapse_store_reasoning`) for what holds on every branch.
 
 | Parameter | Type | Required | Notes |
 |---|---|---|---|

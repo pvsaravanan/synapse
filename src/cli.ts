@@ -20,9 +20,11 @@ Usage: synapse <command> [options]
   hook [--agent A] [--event E]    Handle an agent hook event (JSON on stdin); A: claude|cursor|codex|devin|copilot|gemini|antigravity
   context [--task "..."]          Print the task-lensed project brief
   search <query> [--global] [--limit N] [--type T]
-  store --type T --entity E --title "..." --narrative "..." [--topic K] [--facts a,b] [--files a,b]
+  store --type T --entity E --title "..." --narrative "..." [--topic K] [--facts a,b] [--files a,b] [--scope project]
   detail <id...>                  Show full memories
   timeline <id>                   Show memories around an id
+  branches [promote <branch> | archive <branch> | project-wide <id...>]
+                                  Branches with branch-scoped memories; make a branch's (or one memory's) project-wide, or archive them
   history <id> [--at DATE | --rev N] [--diff] [--restore N]
                                   Earlier versions of a memory, the one that held at a date, or restore one
   resolve <id...> [--status resolved|archived|active]
@@ -198,6 +200,7 @@ async function main(): Promise<void> {
         limit: Number(str('limit') ?? 10),
         type: list('type') as never,
         status: (str('status') as never) ?? 'active',
+        branch: v.global ? undefined : (await import('./branch.js')).visibleBranch(project),
       });
       const { changesFor } = await import('./freshness.js');
       const changes = changesFor(project.rootPath, project.id, hits.map((h) => h.observation));
@@ -220,8 +223,9 @@ async function main(): Promise<void> {
         topicKey: str('topic'),
         source: 'manual',
         rootPath: project.rootPath,
+        scope: str('scope') === 'project' ? 'project' : undefined,
       });
-      console.log(`${r.action}: ${disc.indexLine(r.observation)}`);
+      console.log(`${r.action}: ${disc.indexLine(r.observation)}${r.observation.branch ? ` (on branch ${r.observation.branch} until it merges)` : ''}`);
       break;
     }
     case 'detail': {
@@ -391,6 +395,36 @@ async function main(): Promise<void> {
         const n = await e.ensureEmbeddings(db, project.id, { embedder, status: 'all' });
         e.setEmbedEnabled(db, true);
         console.log(`Meaning-based search is on. Embedded ${n} memor${n === 1 ? 'y' : 'ies'} of ${project.id} in ${((Date.now() - started) / 1000).toFixed(1)}s; new and edited ones are embedded when they are next searched.`);
+      }
+      break;
+    }
+    case 'branches': {
+      const br = await import('./branch.js');
+      const [action, ...args] = pos;
+      if (action === 'promote' || action === 'archive') {
+        if (!args[0]) throw new Error(`Usage: synapse branches ${action} <branch>`);
+        const n = action === 'promote' ? br.promoteBranch(db, project, args[0], 'merged') : br.archiveBranch(db, project.id, args[0]);
+        console.log(action === 'promote' ? `${n} memor${n === 1 ? 'y' : 'ies'} from ${args[0]} are now project-wide.` : `Archived ${n} memor${n === 1 ? 'y' : 'ies'} from ${args[0]}.`);
+        break;
+      }
+      if (action === 'project-wide') {
+        for (const id of args.map((x) => Number(x.replace(/^#/, '')))) {
+          const o = br.makeProjectWide(db, id);
+          console.log(`#${o.id} is project-wide: ${o.title}`);
+        }
+        break;
+      }
+      if (action) throw new Error('Usage: synapse branches [promote <branch> | archive <branch> | project-wide <id...>]');
+      const changed = br.refreshBranches(db, project);
+      for (const b of changed.merged) console.log(`${b} merged: its memories are now project-wide.`);
+      const current = br.branchScope(project.rootPath);
+      const def = br.defaultBranch(project.rootPath);
+      console.log(`Default branch: ${def ?? 'unknown (nothing is branch-scoped; set SYNAPSE_DEFAULT_BRANCH)'}${current ? ` · on ${current}` : ''}`);
+      const rows = br.listBranches(db, project.id).filter((b) => b.memories > 0 || b.state === 'open');
+      if (!rows.length) console.log('No branch-scoped memories.');
+      for (const b of rows) {
+        const what = b.state === 'ended' ? 'ended without a detected merge: review them (promote or archive)' : b.state === 'merged' ? 'merged' : 'open';
+        console.log(`  ${b.branch.padEnd(32)} ${String(b.memories).padStart(3)} memor${b.memories === 1 ? 'y' : 'ies'}  ${what}${b.branch === current ? ' (current)' : ''}`);
       }
       break;
     }

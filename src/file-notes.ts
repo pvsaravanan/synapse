@@ -11,7 +11,8 @@ import path from 'node:path';
 import { getMeta, setMeta, type DB } from './db.js';
 import { changesFor } from './freshness.js';
 import { recordDeliveries, revisionOf, type DeliveryItem } from './deliveries.js';
-import { recordAccess, rowToObservation } from './store.js';
+import { branchClause, recordAccess, rowToObservation } from './store.js';
+import { visibleBranch } from './branch.js';
 import type { Observation, ObservationType, ProjectInfo } from './types.js';
 
 /** SYNAPSE_FILE_NOTES=0 turns file notes off; SYNAPSE_HOOK_INJECT=silent does too. */
@@ -27,14 +28,15 @@ const MAX_PER_FILE = 3;
 const MAX_FILES = 3;
 
 /** Reviewed, active memories of a project that name `rel`, most important first. */
-export function memoriesForFile(db: DB, projectId: string, rel: string, limit = MAX_PER_FILE): Observation[] {
+export function memoriesForFile(db: DB, projectId: string, rel: string, limit = MAX_PER_FILE, branch?: string | null): Observation[] {
+  const scope = branchClause(branch);
   const rows = db
     .prepare(
       `SELECT * FROM observations WHERE projectId = ? AND status = 'active' AND filesModified LIKE ?
-       AND NOT (source = 'hook' AND admissionState = 'candidate') AND type != 'session-request'
+       AND NOT (source = 'hook' AND admissionState = 'candidate') AND type != 'session-request'${scope ? ` AND ${scope.sql}` : ''}
        ORDER BY COALESCE(updatedAt, createdAt) DESC, id DESC LIMIT 50`,
     )
-    .all(projectId, `%${JSON.stringify(rel)}%`) as Record<string, unknown>[];
+    .all(projectId, `%${JSON.stringify(rel)}%`, ...(scope?.params ?? [])) as Record<string, unknown>[];
   return rows
     .map(rowToObservation)
     .filter((o) => o.filesModified.includes(rel) && !(o.source === 'hook' && o.type === 'what-changed'))
@@ -101,9 +103,10 @@ export function fileNotes(db: DB, project: ProjectInfo, sessionId: string | unde
   const sections: string[] = [];
   const shown: number[] = [];
   const delivered: DeliveryItem[] = [];
+  const branch = visibleBranch(project);
   for (const rel of [...new Set(files)].slice(0, MAX_FILES)) {
     if (sessionId && getMeta(db, noteKey(sessionId, rel))) continue;
-    const mems = memoriesForFile(db, project.id, rel);
+    const mems = memoriesForFile(db, project.id, rel, MAX_PER_FILE, branch);
     if (sessionId) setMeta(db, noteKey(sessionId, rel), new Date().toISOString());
     if (mems.length === 0) continue;
     const changes = changesFor(project.rootPath, project.id, mems);
