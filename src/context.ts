@@ -11,6 +11,7 @@ import { indexLine, STALE_HINT } from './disclosure.js';
 import { visibleBranch } from './branch.js';
 import { recordDeliveries, revisionOf, type DeliveryItem } from './deliveries.js';
 import { changesFor } from './freshness.js';
+import { findPatterns } from './reflect.js';
 import { approvedForBrief, ltLine, pendingLongTermCount } from './longterm.js';
 import { relevance } from './retention.js';
 import { search } from './search.js';
@@ -77,6 +78,16 @@ export interface ContextBrief {
 /** Record a brief's contents as shown to a session (deliveries.ts). */
 export function recordBrief(db: DB, project: ProjectInfo, sessionId: string | undefined, task: string, brief: ContextBrief): void {
   recordDeliveries(db, { projectId: project.id, sessionId, channel: 'brief', query: task, items: brief.delivered });
+}
+
+/** One line when auto-captured failures recur across sessions: the agent can summarise them (synapse_reflect). */
+function recurringNote(db: DB, projectId: string): string {
+  try {
+    const n = findPatterns(db, projectId).length;
+    return n ? `${n} recurring pattern${n === 1 ? '' : 's'} in auto-captured failures (same failure across sessions): synapse_reflect lists them to summarise into a fix or procedure.` : '';
+  } catch {
+    return '';
+  }
 }
 
 const ltItem = (i: { id: number; title: string; reviewedAt?: string; createdAt: string }, rank: number): DeliveryItem =>
@@ -182,6 +193,8 @@ export function buildProjectContext(
     if (block.length > 2) lines.push(...block);
   }
   if (pendingNote) lines.push('', pendingNote);
+  const patterns = recurringNote(db, project.id);
+  if (patterns) lines.push('', patterns);
   if (changes.size && lines.some((l) => l.includes('changed since:'))) lines.push('', STALE_HINT);
   lines.push('', `${total} active memories. Use synapse_detail for full records; current code wins over memory.`);
 

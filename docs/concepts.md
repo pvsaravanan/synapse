@@ -282,6 +282,16 @@ Hooks keep one rolling record per edited file and per command, which piles up: a
 
 Originals are archived, not deleted, with `supersededBy` pointing at the record that replaced them (stale candidates have none), and can be reopened. Records you qualified or that were retrieved (`synapse_detail`) are left alone, and so are a session's fixes, failures and goal. `synapse consolidate [--dry-run]` does the same for sessions that ended before consolidation existed, and also re-applies the current [capture rules](agent-integration.md#capture-rules) to older command records, archiving unreviewed searches and file prints that older versions kept.
 
+### Recurring patterns
+
+Hooks record each failed command and each draft fix per session, so the same failure in three sessions is three separate candidates, which consolidation would eventually archive one by one. **Reflection** groups them into patterns and hands them to the agent to summarise: Synapse finds and presents the evidence, the agent's own model writes the explanation, and Synapse still makes no LLM calls.
+
+- **What counts as a pattern.** Failures and draft fixes from the last 90 days, grouped by **the same command with the same error** (a test suite failing on different tests in different sessions is not one pattern), or by **the same error behind different commands** (a missing module breaking both the build and the tests). A pattern spans at least two sessions. Error lines are compared with paths, numbers, quoted values and hashes taken out, and summary lines such as `Test Files 1 failed (1)` or `exit code 1` never define a pattern, because they say that something failed, not what. Read-only commands (a `grep`, a `sed -n`) are ignored.
+- **The evidence.** Each pattern lists its sessions and dates, the distinct error lines seen, the files the draft fixes changed and how often, and its records' ids.
+- **Summarising.** `synapse_reflect` lists the patterns; the agent stores the real cause and fix with `synapse_store` (a problem-solution or gotcha naming the files), or a routine with `synapse_lt_propose` (procedural), then calls `synapse_reflect` with the pattern and the new memory's id. That **files** the pattern: its records are archived pointing at the memory. Noise can be **dismissed** instead, which leaves the records alone.
+- **Filed and dismissed patterns stay quiet** until the failure recurs in at least two new sessions, when the pattern comes back marked as recurring.
+- The brief mentions waiting patterns in one line, and `synapse reflect` shows them in the terminal (`synapse reflect dismiss <pattern>`, `synapse reflect file <pattern> <memory-id>`).
+
 ### Ignored files
 
 A `.synapseignore` file at the project root lists files Synapse never captures as edits (from hooks or the working-tree tracker) and never hashes for [file freshness](#file-freshness). It uses gitignore-style patterns, and the last match wins:

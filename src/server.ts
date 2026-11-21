@@ -7,6 +7,7 @@ import { refreshBranches, visibleBranch } from './branch.js';
 import { search } from './search.js';
 import { buildProjectContext, recordBrief } from './context.js';
 import { formatHistory, formatVersion, memoryHistory, versionAt } from './history.js';
+import { findPatterns, formatPatterns, resolvePattern } from './reflect.js';
 import { pruneDeliveries, recordDeliveries, revisionOf } from './deliveries.js';
 import { getDb, openDatabase, type DB } from './db.js';
 import { formatDetail, formatIndex, formatTimeline, indexLine } from './disclosure.js';
@@ -472,6 +473,35 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         return v ? text(formatVersion(id, v)) : fail(`#${id} has no kept revision ${revision}; kept: ${versions.map((x) => x.revision).join(', ')}`);
       }
       return text(formatHistory(id, versions, { diff: true }));
+    },
+  );
+
+  server.registerTool(
+    'synapse_reflect',
+    {
+      title: 'Reflect on Recurring Patterns',
+      description:
+        'Recurring patterns in auto-captured records: the same command failing, or the same error, across sessions, with the errors seen ' +
+        'and the files that fixed it. Summarise each worth keeping with synapse_store (problem-solution or gotcha) or synapse_lt_propose ' +
+        '(procedural), then call again with { pattern, memoryId } (or longTermId) to file its records under it, or { pattern, dismiss: true } for noise.',
+      inputSchema: {
+        pattern: z.string().optional().describe('A pattern key from the list, e.g. "p-3f9c2a7b"'),
+        memoryId: z.number().int().optional().describe('The memory you stored that explains the pattern'),
+        longTermId: z.number().int().optional().describe('Or the long-term proposal'),
+        dismiss: z.boolean().optional().describe('Noise: stop showing it unless it recurs'),
+        minSessions: z.number().int().min(1).max(20).optional().describe('Sessions a pattern must span (default 2)'),
+      },
+    },
+    async ({ pattern, memoryId, longTermId, dismiss, minSessions }) => {
+      try {
+        if (!pattern) return text(formatPatterns(findPatterns(db, project.id, { minSessions }), { forAgent: true }));
+        const r = resolvePattern(db, project.id, pattern, { memoryId, longTermId, dismiss });
+        return text(dismiss
+          ? `Dismissed ${pattern}; it comes back only if it recurs in new sessions.`
+          : `Filed ${pattern} under ${memoryId != null ? `#${memoryId}` : `LT${longTermId}`}: ${r.archived} record${r.archived === 1 ? '' : 's'} archived${memoryId != null ? ', pointing at it' : ''}.`);
+      } catch (e) {
+        return fail((e as Error).message);
+      }
     },
   );
 

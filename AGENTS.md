@@ -23,7 +23,7 @@ Rebuild after changing `src/` when testing hooks or the MCP server live, because
 - `src/store.ts`, `src/db.ts`: observations, upserts and duplicate merging, schema and migrations
 - `src/context.ts`: the task-lensed project brief
 - `src/search.ts`, `src/retention.ts`: FTS ranking and relevance decay; `src/embed.ts`: optional meaning-based search (in-process embeddings); `src/bench.ts`: `synapse bench`, the retrieval benchmark
-- `src/longterm.ts`, `src/sessions.ts`, `src/freshness.ts`: reviewed long-term memory, sessions and checkpoints, file freshness; `src/deliveries.ts`: what each session was shown; `src/history.ts`: earlier versions of memories; `src/branch.ts`: branch-scoped memories
+- `src/longterm.ts`, `src/sessions.ts`, `src/freshness.ts`: reviewed long-term memory, sessions and checkpoints, file freshness; `src/deliveries.ts`: what each session was shown; `src/history.ts`: earlier versions of memories; `src/branch.ts`: branch-scoped memories; `src/reflect.ts`: recurring patterns for the agent to summarise
 - `src/ui.ts`, `src/ui-page.ts`: `synapse ui`, the local web page (server plus one self-contained HTML page)
 - `src/team.ts`: team memory shared through the repo's `.synapse/memory.jsonl`
 - `src/consolidate.ts`, `src/ignore.ts`: merging and archiving auto-captured records when a session ends; `.synapseignore`

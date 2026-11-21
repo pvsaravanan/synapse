@@ -74,12 +74,14 @@ const READ_ONLY_PROGRAMS = new Set([
   'man', 'type', 'command', 'printf', 'xargs', 'sed', 'node -v', 'npm -v', 'git grep', 'git ls-files', 'git blame',
 ]);
 /** For read-only commands an exit code says little (grep exits 1 on no match); only these mean the command itself broke. */
-const COMMAND_ERROR = /command not found|^\s*\S+:(?: [^:\n]+:)? (No such file or directory|Permission denied|Is a directory)|: (unrecognized|invalid|illegal) option|syntax error/im;
+// Anchored to how shells and tools report errors ("zsh: command not found: x", "bash: x: command not found", "sed: x: No such
+// file"), so printed source that merely contains these words (a regex, a test) is not taken for a failure.
+const COMMAND_ERROR = /(?:^|: )command not found\b|^\s*\S+:(?: [^:\n]+:)? (No such file or directory|Permission denied|Is a directory)|^\s*\S+: (unrecognized|invalid|illegal) option|^\s*\S+:(?: line \d+:)? syntax error/im;
 /**
  * Failure-shaped output lines. Deliberately anchored: a grep or cat whose output merely
  * contains the words "error" or "failed" (e.g. source code) is not a failed command.
  */
-const FAILURE_LINE = new RegExp(
+export const FAILURE_LINE = new RegExp(
   [
     String.raw`^\s*(error|fatal|panic)(\[[^\]]*\])?[:!]`, // "Error: ...", "error[E0308]: ...", "fatal: ..."
     String.raw`^\S+:\d+(:\d+)?: (fatal )?error\b`, // gcc/clang/go-vet style "main.c:3:5: error: ..."
@@ -88,7 +90,7 @@ const FAILURE_LINE = new RegExp(
     String.raw`^\s*(FAIL|FAILED)\b`,
     String.raw`\b\d+ (tests? )?(failed|failing)\b`,
     String.raw`^Traceback \(most recent call last\)`,
-    String.raw`command not found`,
+    String.raw`(?:^|: )command not found\b`, // "zsh: command not found: x", "bash: x: command not found"
     String.raw`^\s*\S+: (No such file or directory|Permission denied)`,
     String.raw`Segmentation fault`,
     String.raw`\bexit(ed)? (with )?(code|status):? [1-9]`, // "exit code 1", Devin's "Exit code: 1"
@@ -131,8 +133,8 @@ export function isTrivialCommand(cmd: string): boolean {
  */
 export function commandKey(cmd: string): string {
   const segments = cmd.split('\n')[0].split(/&&|\|\||;|\|/).map((s) =>
-    s.trim().replace(/\s*(?:\d*>>?|&>)\s*(?:&\d+|\S+)/g, '').replace(/^(?:sudo|time|env)\s+/, '').replace(/^(?:\w+=\S*\s+)+/, '').replace(/\s+/g, ' ').trim(),
-  ).filter(Boolean);
+    s.trim().replace(/^[({]\s*/, '').replace(/\s*[)}]$/, '').replace(/\s*(?:\d*>>?|&>)\s*(?:&\d+|\S+)/g, '').replace(/^(?:sudo|time|env)\s+/, '').replace(/^(?:\w+=\S*\s+)+/, '').replace(/\s+/g, ' ').trim(),
+  ).filter((seg) => seg && !/^\w+=\S*$/.test(seg)); // a bare assignment (S=/tmp/x) is setup, not the command
   return (segments.find((s) => !isTrivialCommand(s)) ?? segments[0] ?? '').slice(0, 80);
 }
 

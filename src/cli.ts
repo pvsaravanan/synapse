@@ -23,6 +23,8 @@ Usage: synapse <command> [options]
   store --type T --entity E --title "..." --narrative "..." [--topic K] [--facts a,b] [--files a,b] [--scope project]
   detail <id...>                  Show full memories
   timeline <id>                   Show memories around an id
+  reflect [dismiss <pattern> | file <pattern> <memory-id>] [--min N]
+                                  Recurring patterns in auto-captured failures and fixes, for an agent to summarise
   branches [promote <branch> | archive <branch> | project-wide <id...>]
                                   Branches with branch-scoped memories; make a branch's (or one memory's) project-wide, or archive them
   history <id> [--at DATE | --rev N] [--diff] [--restore N]
@@ -83,7 +85,7 @@ async function main(): Promise<void> {
       count: { type: 'string' }, since: { type: 'string' }, summary: { type: 'string' }, archive: { type: 'boolean' },
       out: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, scope: { type: 'string' }, text: { type: 'string' },
       applies: { type: 'string' }, evidence: { type: 'string' }, reason: { type: 'string' }, state: { type: 'string' }, query: { type: 'string' },
-      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, event: { type: 'string' }, fix: { type: 'boolean' }, port: { type: 'string' }, open: { type: 'boolean' }, 'allow-tools': { type: 'boolean' }, 'no-instructions': { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, file: { type: 'string' }, auto: { type: 'boolean' }, k: { type: 'string' }, keyword: { type: 'boolean' }, json: { type: 'boolean' }, memory: { type: 'string' }, at: { type: 'string' }, rev: { type: 'string' }, diff: { type: 'boolean' }, restore: { type: 'string' },
+      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, event: { type: 'string' }, fix: { type: 'boolean' }, port: { type: 'string' }, open: { type: 'boolean' }, 'allow-tools': { type: 'boolean' }, 'no-instructions': { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, file: { type: 'string' }, auto: { type: 'boolean' }, k: { type: 'string' }, keyword: { type: 'boolean' }, json: { type: 'boolean' }, memory: { type: 'string' }, at: { type: 'string' }, rev: { type: 'string' }, diff: { type: 'boolean' }, min: { type: 'string' }, restore: { type: 'string' },
     },
   });
   const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : undefined);
@@ -396,6 +398,20 @@ async function main(): Promise<void> {
         e.setEmbedEnabled(db, true);
         console.log(`Meaning-based search is on. Embedded ${n} memor${n === 1 ? 'y' : 'ies'} of ${project.id} in ${((Date.now() - started) / 1000).toFixed(1)}s; new and edited ones are embedded when they are next searched.`);
       }
+      break;
+    }
+    case 'reflect': {
+      const r = await import('./reflect.js');
+      const [action, key, memory] = pos;
+      const minSessions = str('min') ? Math.max(1, Number(str('min'))) : undefined;
+      if (action === 'dismiss' && key) {
+        r.resolvePattern(db, project.id, key, { dismiss: true });
+        console.log(`Dismissed ${key}; it comes back only if it recurs in new sessions.`);
+      } else if (action === 'file' && key && memory) {
+        const res = r.resolvePattern(db, project.id, key, { memoryId: Number(memory.replace(/^#/, '')) });
+        console.log(`Filed ${key} under #${memory.replace(/^#/, '')}: ${res.archived} records archived.`);
+      } else if (action) throw new Error('Usage: synapse reflect [dismiss <pattern> | file <pattern> <memory-id>] [--min N]');
+      else console.log(r.formatPatterns(r.findPatterns(db, project.id, { minSessions })));
       break;
     }
     case 'branches': {

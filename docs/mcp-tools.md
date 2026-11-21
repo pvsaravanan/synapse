@@ -95,6 +95,18 @@ A record whose files changed since it was stored adds a line such as `Changed si
 
 Lists memories from the same project in chronological order, with the anchor marked `>`.
 
+### `synapse_reflect`
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `pattern` | string | Optional: a pattern key such as `p-3f9c2a7b` |
+| `memoryId` | number | With `pattern`: the memory you stored that explains it |
+| `longTermId` | number | With `pattern`: or the long-term proposal |
+| `dismiss` | boolean | With `pattern`: noise, stop showing it unless it recurs |
+| `minSessions` | 1–20 | Sessions a pattern must span (default 2) |
+
+Without `pattern`, lists [recurring patterns](concepts.md#recurring-patterns) in auto-captured failures and fixes, with the errors seen and the files that fixed them. Summarise each worth keeping with `synapse_store` or `synapse_lt_propose`, then call again with `pattern` and `memoryId` (or `longTermId`) to file its records under it.
+
 ### `synapse_history`
 
 | Parameter | Type | Notes |
