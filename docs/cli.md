@@ -49,6 +49,7 @@ Commands that work on memory use the project of the **current directory** (see [
 |---|---|
 | `synapse session` | List recent sessions |
 | `synapse session start` | Start a session and print its id |
+| `synapse audit [session-id] [--memory ID]` | What a session was shown (brief, searches, details, file notes, with ranks and what changed since; default: the latest session), or which sessions a memory reached; see [what each session was shown](concepts.md#what-each-session-was-shown) |
 | `synapse session end [--summary "…"]` | Close the active session |
 | `synapse checkpoint [--session ID] [--limit N]` | List compaction checkpoints, newest first |
 | `synapse checkpoint show <id>` | Show one checkpoint in full (Synapse's and the agent's summaries) |
@@ -112,7 +113,7 @@ Starts a local web page for the project in the current directory (any project ca
 - **Changed since:** memories whose files changed after they were stored, with **Still true** (verified) and **Outdated** buttons. A flagged memory shows **what changed since it was stored**: the git diff of each changed file (up to 5, 400 lines each, secrets redacted) from the version the memory was stored or last verified against to the working tree, including uncommitted edits. The baseline is the committed version whose content matches the hash the memory recorded; when the memory was stored while the file had uncommitted edits, the last commit before then stands in, marked approximate. Created files show as all new and deleted ones as all removed. Only the project `synapse ui` was started in can be checked, since only its folder is known, and diffs need git.
 - **Candidates:** auto-captured records, with **Keep** to qualify the useful ones. Tick several (or the box in the bar above the list, for all shown) to keep or archive them at once. Command records show as **Ran** or **Failed** plus the command, without the leading `cd` into the project.
 - **Usage:** which memories actually help. **Read often** ranks curated memories by reads and helpful ratings, with a bar per memory and **Propose for long-term** (highlighted for the most-read and the helpful; the proposal waits in Long-term for your approval). **Not read in N days** lists memories stored before the window that no agent read in it, with **Resolve** and **Archive**. **Rated wrong** lists active memories rated conflicted, corrected or outdated. Memories stored inside the window and never read are listed separately as too new to judge. Pick a 7, 30 or 90-day window.
-- **Sessions:** each session's agent, summary, checkpoints and records.
+- **Sessions:** each session's agent, summary, checkpoints and records, and **What it saw**: every memory that reached the agent, in order (brief, searches, details, file notes), flagged with what changed since ([details](concepts.md#what-each-session-was-shown)). A memory's detail panel lists the sessions it was **Shown to**.
 - **Long-term:** proposals to approve or reject, and approved items to retire, each with a required reason (recorded as "via synapse ui").
 
 The top of the page shows curated, candidate, changed-since and session counts; click one to open that view. Every memory can be resolved, archived or reopened.

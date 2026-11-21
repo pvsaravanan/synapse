@@ -26,7 +26,8 @@ export function indexLine(o: Observation, changes: FileChange[] = []): string {
 }
 
 export function formatIndex(
-  hits: SearchHit[], opts: { query?: string; global?: boolean; maxTokens?: number; changes?: Map<number, FileChange[]> } = {},
+  hits: SearchHit[],
+  opts: { query?: string; global?: boolean; maxTokens?: number; changes?: Map<number, FileChange[]>; /** Collects the hits that fit the budget. */ shown?: SearchHit[] } = {},
 ): string {
   const lines: string[] = [];
   let used = 0;
@@ -40,6 +41,7 @@ export function formatIndex(
     }
     used += t;
     lines.push(line);
+    opts.shown?.push(h);
   }
   const header = opts.query ? `Synapse results for "${opts.query}" (${lines.length})` : `Synapse memories (${lines.length})`;
   const footer = [

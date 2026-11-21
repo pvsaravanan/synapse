@@ -9,6 +9,7 @@ import { VERSION } from './config.js';
 import type { DB } from './db.js';
 import { memoryDiffs } from './diff.js';
 import { changesFor, staleMemories } from './freshness.js';
+import { deliveryCounts, deliveryFlags, memoryDeliveries, sessionDeliveries } from './deliveries.js';
 import { listLongTerm, promoteToLongTerm, reviewLongTerm, LT_KINDS, LT_SCOPES, LT_STATES } from './longterm.js';
 import { hybridSearch } from './embed.js';
 import { listCheckpoints, recentSessions, checkpointText } from './sessions.js';
@@ -151,14 +152,19 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
         revisionCount: o.revisionCount, commitHash: o.commitHash, relatedCommits: o.relatedCommits, relatedEntities: o.relatedEntities,
         progress: o.progress, valueCategory: o.valueCategory, access: access ?? null, feedback, uid: o.uid ?? null,
         replacedBy: replacedBy ? { id: replacedBy.id, title: replacedBy.title } : null, replaces,
+        shownTo: memoryDeliveries(db, o.id, 20).map((d) => ({
+          sessionId: d.sessionId, agent: d.agent, channel: d.channel, query: d.query, rank: d.rank, createdAt: d.createdAt, flags: deliveryFlags(d),
+        })),
       };
     },
     '/api/sessions': (u) => {
       const p = projectParam(u);
-      return recentSessions(db, p, 60, false).map((s) => {
+      const sessions = recentSessions(db, p, 60, false);
+      const shown = deliveryCounts(db, sessions.map((s) => s.id));
+      return sessions.map((s) => {
         const cps = listCheckpoints(db, p, { sessionId: s.id, limit: 20 });
         const count = Number((db.prepare('SELECT COUNT(*) AS n FROM observations WHERE sessionId = ?').get(s.id) as { n: number }).n);
-        return { ...s, memories: count, checkpoints: cps.map((c) => ({ id: c.id, createdAt: c.createdAt, text: checkpointText(c) })) };
+        return { ...s, memories: count, shown: shown.get(s.id) ?? 0, checkpoints: cps.map((c) => ({ id: c.id, createdAt: c.createdAt, text: checkpointText(c) })) };
       });
     },
     '/api/session': (u) => {
@@ -166,7 +172,7 @@ export function createUiServer(opts: UiOptions): { server: Server; token: string
       const items = (db.prepare('SELECT id FROM observations WHERE sessionId = ? ORDER BY id').all(id) as { id: number }[])
         .map((r) => getObservation(db, Number(r.id))!)
         .map((o) => summary(o));
-      return { items };
+      return { items, shown: sessionDeliveries(db, id).map((e) => ({ ...e, items: e.items.map((d) => ({ ...d, flags: deliveryFlags(d) })) })) };
     },
     '/api/graph': (u) => {
       const p = projectParam(u);

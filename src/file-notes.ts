@@ -10,6 +10,7 @@
 import path from 'node:path';
 import { getMeta, setMeta, type DB } from './db.js';
 import { changesFor } from './freshness.js';
+import { recordDeliveries, revisionOf, type DeliveryItem } from './deliveries.js';
 import { recordAccess, rowToObservation } from './store.js';
 import type { Observation, ObservationType, ProjectInfo } from './types.js';
 
@@ -99,6 +100,7 @@ export function fileNotes(db: DB, project: ProjectInfo, sessionId: string | unde
   if (!fileNotesEnabled()) return undefined;
   const sections: string[] = [];
   const shown: number[] = [];
+  const delivered: DeliveryItem[] = [];
   for (const rel of [...new Set(files)].slice(0, MAX_FILES)) {
     if (sessionId && getMeta(db, noteKey(sessionId, rel))) continue;
     const mems = memoriesForFile(db, project.id, rel);
@@ -111,9 +113,13 @@ export function fileNotes(db: DB, project: ProjectInfo, sessionId: string | unde
     });
     sections.push(`Synapse memory about ${rel}:\n${lines.join('\n')}`);
     shown.push(...mems.map((o) => o.id));
+    delivered.push(...mems.map((o): DeliveryItem => ({
+      observationId: o.id, title: o.title, revision: revisionOf(o), rank: delivered.length + 1, section: rel, stale: Boolean(changes.get(o.id)?.length),
+    })));
   }
   if (sections.length === 0) return undefined;
   recordAccess(db, shown);
+  recordDeliveries(db, { projectId: project.id, sessionId, channel: 'file-note', query: [...new Set(delivered.map((d) => d.section!))].join(', '), items: delivered });
   const stale = sections.some((x) => x.includes('[changed since stored]'));
   return `${sections.join('\n\n')}\nRead one in full with synapse_detail before relying on it${stale ? '; check [changed since stored] ones against the current code' : ''}.`;
 }

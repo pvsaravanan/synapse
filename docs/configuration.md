@@ -16,6 +16,7 @@ Synapse is configured entirely through environment variables. There is no config
 | `SYNAPSE_EMBED_MODEL` | `Xenova/all-MiniLM-L6-v2` | Sentence-embedding model (a transformers.js feature-extraction model); run `synapse embed` after changing it |
 | `SYNAPSE_TEAM` | on | `0` stops setup, session start and the MCP server from loading the repo's `.synapse/memory.jsonl` automatically ([team memory](concepts.md#team-memory)) |
 | `SYNAPSE_CANDIDATE_DAYS` | `14` | Auto-captured candidates nobody kept, read or rated are archived after this many days; `0` turns it off ([consolidation](concepts.md#consolidation)) |
+| `SYNAPSE_AUDIT_DAYS` | `90` | Days to keep the record of [what each session was shown](concepts.md#what-each-session-was-shown); `0` stops recording |
 | `SYNAPSE_AGENT_APPROVAL` | unset | `1` lets agents other than Claude Code call `synapse_lt_approve`, relying on their own permission prompt. Unset, they are refused and you approve with `synapse lt approve` or `synapse ui` ([who approves](concepts.md#reviewed-long-term-memory)) |
 | `SYNAPSE_DEBUG` | unset | When set, hook errors are printed to stderr |
 

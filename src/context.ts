@@ -8,6 +8,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { DB } from './db.js';
 import { indexLine, STALE_HINT } from './disclosure.js';
+import { recordDeliveries, revisionOf, type DeliveryItem } from './deliveries.js';
 import { changesFor } from './freshness.js';
 import { approvedForBrief, ltLine, pendingLongTermCount } from './longterm.js';
 import { relevance } from './retention.js';
@@ -68,10 +69,21 @@ export interface ContextBrief {
   tokens: number;
   memoryIds: number[];
   startFiles: string[];
+  /** The memories and long-term items that made it into the text (after the token budget), in order. */
+  delivered: DeliveryItem[];
 }
 
+/** Record a brief's contents as shown to a session (deliveries.ts). */
+export function recordBrief(db: DB, project: ProjectInfo, sessionId: string | undefined, task: string, brief: ContextBrief): void {
+  recordDeliveries(db, { projectId: project.id, sessionId, channel: 'brief', query: task, items: brief.delivered });
+}
+
+const ltItem = (i: { id: number; title: string; reviewedAt?: string; createdAt: string }, rank: number): DeliveryItem =>
+  ({ longTermId: i.id, title: i.title, revision: i.reviewedAt ?? i.createdAt, rank, section: 'long-term' });
+
 export function buildProjectContext(
-  db: DB, project: ProjectInfo, task: string, opts: { maxTokens?: number; sessionId?: string } = {},
+  db: DB, project: ProjectInfo, task: string,
+  opts: { maxTokens?: number; sessionId?: string; /** Record what the brief shows as delivered to this session. */ audit?: { sessionId?: string } } = {},
 ): ContextBrief {
   const maxTokens = opts.maxTokens ?? 1200;
   const lens = detectLens(task);
@@ -90,7 +102,9 @@ export function buildProjectContext(
     if (pendingNote) lines.push('', pendingNote);
     lines.push('', 'No memories stored for this project yet (fresh project). Store decisions, gotchas and fixes as you go.');
     const text = lines.join('\n');
-    return { lens: lens.id, text, tokens: estimateTokens(text), memoryIds: [], startFiles: [] };
+    const brief = { lens: lens.id, text, tokens: estimateTokens(text), memoryIds: [], startFiles: [], delivered: longTerm.map((i, n) => ltItem(i, n + 1)) };
+    if (opts.audit) recordBrief(db, project, opts.audit.sessionId, task, brief);
+    return brief;
   }
 
   const matches = task.trim()
@@ -136,25 +150,30 @@ export function buildProjectContext(
   const changes = changesFor(project.rootPath, project.id, [...relevant, ...cautions]);
   const line = (o: Observation) => `- ${indexLine(o, changes.get(o.id))}`;
 
-  const sections: [string, string[]][] = [
-    ['Long-term', longTerm.map((i) => `- ${ltLine(i, 160)}`)],
+  const memItem = (section: string) => (o: Observation): DeliveryItem =>
+    ({ observationId: o.id, title: o.title, revision: revisionOf(o), section, stale: Boolean(changes.get(o.id)?.length) });
+  // Each section's lines, with the item each line shows (if any), so what survives the token budget is known.
+  const sections: [string, string[], DeliveryItem[]?][] = [
+    ['Long-term', longTerm.map((i) => `- ${ltLine(i, 160)}`), longTerm.map((i, n) => ltItem(i, n + 1))],
     ['Start here', startFiles.map((f) => `- ${f}`)],
-    ['Relevant memories', relevant.map(line)],
-    ['Cautions', cautions.map(line)],
+    ['Relevant memories', relevant.map(line), relevant.map(memItem('relevant'))],
+    ['Cautions', cautions.map(line), cautions.map(memItem('caution'))],
     ['In progress', inProgress.map((o) => `- ${o.progress!.feature}: ${o.progress!.status}${o.progress!.completion != null ? ` ${o.progress!.completion}%` : ''} (#${o.id})`)],
     ['Last session', sessions.map((s) => `- ${(s.endedAt ?? s.startedAt).slice(0, 10)}: ${s.summary}`)],
     ['Verify', lens.verify.map((v) => `- ${v}`)],
   ];
 
   let used = estimateTokens(lines.join('\n'));
-  for (const [title, body] of sections) {
+  const delivered: DeliveryItem[] = [];
+  for (const [title, body, items] of sections) {
     if (body.length === 0) continue;
     const block = ['', `## ${title}`];
-    for (const line of body) {
+    for (const [i, line] of body.entries()) {
       const t = estimateTokens(line);
       if (used + t > maxTokens) break;
       block.push(line);
       used += t;
+      if (items?.[i]) delivered.push({ ...items[i], rank: delivered.length + 1 });
     }
     if (block.length > 2) lines.push(...block);
   }
@@ -163,9 +182,13 @@ export function buildProjectContext(
   lines.push('', `${total} active memories. Use synapse_detail for full records; current code wins over memory.`);
 
   const memoryIds = [...relevant, ...cautions].map((o) => o.id);
-  recordAccess(db, relevant.map((o) => o.id));
+  // A read is a memory reaching the agent: relevant memories that fit the budget (cautions are standing reminders).
+  const shownRelevant = new Set(delivered.filter((d) => d.section === 'relevant').map((d) => d.observationId));
+  recordAccess(db, relevant.filter((o) => shownRelevant.has(o.id)).map((o) => o.id));
   const text = lines.join('\n');
-  return { lens: lens.id, text, tokens: estimateTokens(text), memoryIds, startFiles };
+  const brief = { lens: lens.id, text, tokens: estimateTokens(text), memoryIds, startFiles, delivered };
+  if (opts.audit) recordBrief(db, project, opts.audit.sessionId, task, brief);
+  return brief;
 }
 
 function clip(s: string, max: number): string {

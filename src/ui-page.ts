@@ -229,6 +229,11 @@ details.unew > summary { cursor: pointer; color: var(--muted); font-size: 14px; 
 .md > .section:first-child { margin-top: 0; }
 .section h3 { font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; font-weight: 500; }
 .section ul { margin: 0; padding-left: 18px; }
+.shown .event { border-left: 2px solid var(--line); padding: 2px 0 2px 12px; margin: 10px 0; }
+.shown .ehead { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.shown ol { margin: 4px 0 0; padding-left: 20px; }
+.shown li, .shownto li { margin: 3px 0; overflow-wrap: anywhere; }
+.shown .flag, .shownto .flag { margin-left: 6px; }
 .files { list-style: none; padding: 0 !important; display: flex; flex-wrap: wrap; gap: 6px; }
 .files li { font-family: var(--mono); font-size: 12.5px; background: var(--soft); border-radius: 8px; padding: 3px 9px; max-width: 100%; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -764,21 +769,46 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
           h('span', { class: 'title' }, s.agent || 'session'),
           h('span', { class: 'flag' + (s.status === 'active' ? ' ok' : '') }, s.status),
           h('span', { class: 'small' }, when(s.startedAt) + (s.endedAt ? ' → ' + when(s.endedAt) : '') + (span(s) ? ' · ' + span(s) : '')),
-          h('span', { class: 'small' }, plural(s.memories, 'record', 'records'))),
+          h('span', { class: 'small' }, plural(s.memories, 'record', 'records')),
+          s.shown ? h('span', { class: 'small' }, 'shown ' + plural(s.shown, 'memory', 'memories')) : null),
         s.summary ? h('p', {}, s.summary) : h('p', { class: 'small' }, 'No summary yet.'),
         s.checkpoints.length ? h('p', { class: 'small' }, plural(s.checkpoints.length, 'checkpoint', 'checkpoints') + ': ' + s.checkpoints[0].text.slice(0, 160)) : null,
-        s.memories ? h('button', { class: 'link', onclick: () => showSession(s) }, 'Show its records') : null)));
+        s.memories || s.shown ? h('button', { class: 'link', onclick: () => showSession(s) }, s.shown ? 'What it saw and stored' : 'Show its records') : null)));
   }
 
   async function showSession(s) {
-    const { items } = await api('/api/session', { id: s.id });
+    const { items, shown } = await api('/api/session', { id: s.id });
     S.selected = null;
     fill($('dactions'));
     fill($('detail'), h('div', { class: 'dhead' }, h('span', { class: 'eyebrow mono' }, 'Session ' + s.id.slice(0, 8))), h('h2', {}, s.agent || 'session'),
       s.summary ? h('div', { class: 'md' }, md(s.summary)) : null,
-      h('div', { class: 'section' }, h('h3', {}, plural(items.length, 'record', 'records')),
+      h('div', { class: 'section' }, h('h3', {}, 'What it was shown'),
+        shown.length
+          ? h('div', { class: 'shown' }, h('p', { class: 'small' }, 'Every memory that reached the agent, in order: the brief, searches, details it opened and notes on files it read. Flags say what was true then and what changed since.'),
+              ...shown.map(shownEvent))
+          : h('p', { class: 'small' }, 'Nothing recorded. Sessions before this feature, and sessions where no memory reached the agent, have no record.')),
+      h('div', { class: 'section' }, h('h3', {}, plural(items.length, 'record', 'records') + ' it stored'),
         items.length ? h('div', { class: 'list' }, ...items.map((m) => memoryRow(m))) : h('p', { class: 'small' }, 'None.')));
     revealDetail();
+  }
+
+  const CHANNEL = { brief: 'Brief', search: 'Search', detail: 'Opened', 'file-note': 'File note' };
+  const WARN_FLAGS = ['flagged changed when shown', 'rated wrong since', 'deleted'];
+
+  // One brief, search, detail call or file note, and the memories it showed.
+  function shownEvent(e) {
+    const what = e.channel === 'brief' ? (e.query ? 'for "' + e.query + '"' : 'at session start')
+      : e.channel === 'file-note' ? 'on ' + e.query : e.channel === 'search' ? '"' + (e.query || '') + '"' : '';
+    return h('div', { class: 'event' },
+      h('div', { class: 'ehead' }, h('span', { class: 'mono small' }, new Date(e.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+        h('span', { class: 'type' }, CHANNEL[e.channel] || e.channel), h('span', { class: 'small' }, what)),
+      h('ol', {}, ...e.items.map((d) => h('li', {},
+        d.observationId != null
+          ? h('button', { class: 'link', onclick: () => select(d.observationId) }, '#' + d.observationId + ' ' + d.title)
+          : h('span', {}, 'LT' + d.longTermId + ' ' + d.title),
+        e.channel === 'brief' && d.section ? h('span', { class: 'small' }, ' · ' + d.section) : null,
+        d.score != null ? h('span', { class: 'small' }, ' · score ' + d.score.toFixed(2)) : null,
+        ...d.flags.map((f) => h('span', { class: 'flag' + (WARN_FLAGS.includes(f) ? ' warn' : '') }, f))))));
   }
 
   async function loadLongTerm() {
@@ -1331,6 +1361,12 @@ kbd { background: var(--soft); border: 1px solid var(--line); border-bottom-widt
       m.replacedBy ? h('div', { class: 'section' }, h('h3', {}, 'Replaced by'), h('button', { class: 'link', onclick: () => select(m.replacedBy.id) }, '#' + m.replacedBy.id + ' ' + m.replacedBy.title)) : null,
       m.replaces.length ? h('div', { class: 'section' }, h('h3', {}, 'Replaces'), h('ul', {}, ...m.replaces.map((r) => h('li', {}, h('button', { class: 'link', onclick: () => select(r.id) }, '#' + r.id + ' ' + r.title))))) : null,
       list('Feedback', m.feedback.map((f) => f.signal + ' · ' + when(f.createdAt) + (f.note ? ' · ' + f.note : ''))),
+      m.shownTo && m.shownTo.length ? h('div', { class: 'section' }, h('h3', {}, 'Shown to'),
+        h('p', { class: 'small' }, 'The sessions this memory reached, newest first: if it turns out wrong, these are the ones it may have misled.'),
+        h('ul', { class: 'shownto' }, ...m.shownTo.map((x) => h('li', {},
+          h('span', {}, when(x.createdAt) + ' · ' + (x.agent || 'agent') + ' '), h('span', { class: 'mono small' }, (x.sessionId || 'no session').slice(0, 8)),
+          h('span', { class: 'small' }, ' · ' + (CHANNEL[x.channel] || x.channel) + (x.query ? ' "' + x.query + '"' : '') + (x.rank ? ' (rank ' + x.rank + ')' : '')),
+          ...x.flags.map((f) => h('span', { class: 'flag' + (WARN_FLAGS.includes(f) ? ' warn' : '') }, f)))))) : null,
       h('div', { class: 'section' }, h('h3', {}, 'About'), h('dl', { class: 'kv' }, ...kv.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))));
     fill($('dactions'), ...actions.filter(Boolean));
     if (m.changes.length) loadDiffs(m);

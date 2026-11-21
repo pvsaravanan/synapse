@@ -28,6 +28,9 @@ Usage: synapse <command> [options]
   verify <id...>                  Mark memories checked against current code (re-records file hashes)
   ingest-git [--count N] [--since DATE]
   session start|end [--summary "..."]
+  audit [session-id] [--memory ID]
+                                  What a session was shown (brief, searches, details, file notes; default: the latest
+                                  session), or which sessions were shown a memory
   checkpoint [list] [--session ID] [--limit N] | checkpoint show <id>
                                   Compaction checkpoints, newest first
   lt list [--state proposed|approved|archived|superseded] [--query Q]
@@ -76,7 +79,7 @@ async function main(): Promise<void> {
       count: { type: 'string' }, since: { type: 'string' }, summary: { type: 'string' }, archive: { type: 'boolean' },
       out: { type: 'string' }, session: { type: 'string' }, kind: { type: 'string' }, scope: { type: 'string' }, text: { type: 'string' },
       applies: { type: 'string' }, evidence: { type: 'string' }, reason: { type: 'string' }, state: { type: 'string' }, query: { type: 'string' },
-      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, event: { type: 'string' }, fix: { type: 'boolean' }, port: { type: 'string' }, open: { type: 'boolean' }, 'allow-tools': { type: 'boolean' }, 'no-instructions': { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, file: { type: 'string' }, auto: { type: 'boolean' }, k: { type: 'string' }, keyword: { type: 'boolean' }, json: { type: 'boolean' },
+      approve: { type: 'boolean' }, project: { type: 'string' }, 'dry-run': { type: 'boolean' }, agent: { type: 'string' }, event: { type: 'string' }, fix: { type: 'boolean' }, port: { type: 'string' }, open: { type: 'boolean' }, 'allow-tools': { type: 'boolean' }, 'no-instructions': { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, file: { type: 'string' }, auto: { type: 'boolean' }, k: { type: 'string' }, keyword: { type: 'boolean' }, json: { type: 'boolean' }, memory: { type: 'string' },
     },
   });
   const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : undefined);
@@ -387,6 +390,26 @@ async function main(): Promise<void> {
         e.setEmbedEnabled(db, true);
         console.log(`Meaning-based search is on. Embedded ${n} memor${n === 1 ? 'y' : 'ies'} of ${project.id} in ${((Date.now() - started) / 1000).toFixed(1)}s; new and edited ones are embedded when they are next searched.`);
       }
+      break;
+    }
+    case 'audit': {
+      const d = await import('./deliveries.js');
+      const { recentSessions } = await import('./sessions.js');
+      if (str('memory')) {
+        const id = Number(str('memory')!.replace(/^#/, ''));
+        const rows = d.memoryDeliveries(db, id);
+        if (!rows.length) console.log(`#${id} was not recorded as shown to any session${d.auditDays() === 0 ? ' (recording is off: SYNAPSE_AUDIT_DAYS=0)' : ''}.`);
+        for (const r of rows) {
+          const flags = d.deliveryFlags(r);
+          console.log(`${r.createdAt.slice(0, 16).replace('T', ' ')}  ${(r.sessionId ?? 'no session').slice(0, 8)}  ${(r.agent ?? '').padEnd(12)} ${r.channel}${r.query ? ` "${r.query}"` : ''}${r.rank ? ` (rank ${r.rank})` : ''}${flags.length ? `  ${flags.join('; ')}` : ''}`);
+        }
+        break;
+      }
+      const sessions = recentSessions(db, project.id, 50, false);
+      const session = pos[0] ? sessions.find((s) => s.id.startsWith(pos[0])) : sessions[0];
+      if (!session) throw new Error(pos[0] ? `No session of ${project.id} starts with ${pos[0]}` : `No sessions yet for ${project.id}`);
+      console.log(`Session ${session.id.slice(0, 8)} (${session.agent ?? 'agent'}, ${session.startedAt.slice(0, 16).replace('T', ' ')}, ${session.status})`);
+      console.log(d.formatSessionDeliveries(d.sessionDeliveries(db, session.id)));
       break;
     }
     case 'bench': {

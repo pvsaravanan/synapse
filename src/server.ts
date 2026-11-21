@@ -3,7 +3,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { hooksInstalled, toolMode, VERSION, type ToolMode } from './config.js';
 import { teamAutoImport } from './team.js';
-import { buildProjectContext } from './context.js';
+import { buildProjectContext, recordBrief } from './context.js';
+import { pruneDeliveries, recordDeliveries, revisionOf } from './deliveries.js';
 import { getDb, openDatabase, type DB } from './db.js';
 import { formatDetail, formatIndex, formatTimeline, indexLine } from './disclosure.js';
 import { consolidateSession } from './consolidate.js';
@@ -138,7 +139,10 @@ export function createServer(opts: ServerOptions = {}): McpServer {
 
   // Without hooks, the server stands in for them: the brief goes into its instructions (shown at session start by
   // clients that support them) or onto the first tool result, and one session spans the server process.
-  const brief = hooks ? '' : buildProjectContext(db, project, '', { maxTokens: 700 }).text;
+  const startBrief = hooks ? undefined : buildProjectContext(db, project, '', { maxTokens: 700 });
+  const brief = startBrief?.text ?? '';
+  // The start brief is built before any session exists; it is recorded against the session once the agent shows it.
+  let briefPending = Boolean(startBrief?.delivered.length);
   const instructions = hooks ? USAGE_HINT : `${USAGE_HINT}\n${RECOVER_HINT}${brief ? `\n\n${brief}` : ''}`;
   const server = new McpServer({ name: 'synapse', version: VERSION }, { instructions });
   let ownSession: string | undefined;
@@ -213,6 +217,7 @@ export function createServer(opts: ServerOptions = {}): McpServer {
     refreshSessionHashes(db, id, project.rootPath);
     endSession(db, id, autoSummary(db, project, id));
     consolidateSession(db, project, id);
+    pruneDeliveries(db);
   };
   const sessionId = () => (!hooks && ownSession ? ownSession : activeSession(db, project.id)?.id);
 
@@ -234,9 +239,19 @@ export function createServer(opts: ServerOptions = {}): McpServer {
       const result = await handler(...a);
       sessionCalls++;
       writeCheckpoint();
+      // Clients that show server instructions had the start brief at session start.
+      const inInstructions = CLIENTS_SHOWING_INSTRUCTIONS.has(clientName());
+      if (briefPending && inInstructions) {
+        briefPending = false;
+        recordBrief(db, project, sessionId(), '', startBrief!);
+      }
       if (briefed) return result;
       briefed = true;
-      if (name === 'synapse_project_context' || CLIENTS_SHOWING_INSTRUCTIONS.has(clientName()) || result.isError) return result;
+      if (name === 'synapse_project_context' || inInstructions || result.isError) return result;
+      if (briefPending) {
+        briefPending = false;
+        recordBrief(db, project, sessionId(), '', startBrief!);
+      }
       return { ...result, content: [{ type: 'text', text: `Synapse brief (first call this session; current code wins):\n\n${brief}\n\n---` }, ...result.content] };
     };
     return register(...args);
@@ -361,7 +376,13 @@ export function createServer(opts: ServerOptions = {}): McpServer {
         );
       }
       const changes = changesFor(project.rootPath, project.id, hits.map((h) => h.observation));
-      return text(formatIndex(hits, { query: a.query, global, maxTokens: a.maxTokens, changes }));
+      const shown: typeof hits = [];
+      const out = formatIndex(hits, { query: a.query, global, maxTokens: a.maxTokens, changes, shown });
+      recordDeliveries(db, {
+        projectId: project.id, sessionId: sessionId(), channel: 'search', query: a.query,
+        items: shown.map((h, i) => ({ observationId: h.observation.id, title: h.observation.title, revision: revisionOf(h.observation), rank: i + 1, score: h.score, stale: Boolean(changes.get(h.observation.id)?.length) })),
+      });
+      return text(out);
     },
   );
 
@@ -377,6 +398,10 @@ export function createServer(opts: ServerOptions = {}): McpServer {
       if (obs.length === 0) return fail(`No memories found for ids ${ids.join(', ')}`);
       recordAccess(db, obs.map((o) => o.id));
       const changes = changesFor(project.rootPath, project.id, obs);
+      recordDeliveries(db, {
+        projectId: project.id, sessionId: sessionId(), channel: 'detail', query: ids.map((i) => `#${i}`).join(' '),
+        items: obs.map((o, i) => ({ observationId: o.id, title: o.title, revision: revisionOf(o), rank: i + 1, stale: Boolean(changes.get(o.id)?.length) })),
+      });
       return text(obs.map((o) => formatDetail(o, changes.get(o.id))).join('\n\n---\n\n'));
     },
   );
@@ -414,11 +439,11 @@ export function createServer(opts: ServerOptions = {}): McpServer {
       inputSchema: { task: z.string(), maxTokens: z.number().int().min(200).max(4000).optional() },
     },
     async ({ task, maxTokens }) => {
-      if (hooks || !ownSession) return text(buildProjectContext(db, project, task, { maxTokens }).text);
+      if (hooks || !ownSession) return text(buildProjectContext(db, project, task, { maxTokens, audit: { sessionId: sessionId() } }).text);
       recordGoal(db, project.id, ownSession, task);
       // A later call in a session that already did work (often after the agent's context was summarized) leads with its progress.
       if (sessionCalls > 0) writeCheckpoint(true);
-      return text(buildProjectContext(db, project, task, { maxTokens, sessionId: sessionCalls > 0 ? ownSession : undefined }).text);
+      return text(buildProjectContext(db, project, task, { maxTokens, sessionId: sessionCalls > 0 ? ownSession : undefined, audit: { sessionId: ownSession } }).text);
     },
   );
 

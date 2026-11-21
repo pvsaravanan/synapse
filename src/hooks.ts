@@ -23,6 +23,7 @@ import { hookInjectMode, nudgeEnabled } from './config.js';
 import { buildProjectContext } from './context.js';
 import { getMeta, setMeta, type DB } from './db.js';
 import { consolidateSession } from './consolidate.js';
+import { pruneDeliveries } from './deliveries.js';
 import { archiveStaleCandidates } from './consolidate.js';
 import { clearFileNotes, fileNotes, filesInCommand, notedFiles, projectRelative, stripHeredocs } from './file-notes.js';
 import { isIgnored } from './ignore.js';
@@ -385,6 +386,7 @@ function closeSession(db: DB, project: ProjectInfo, sessionId: string | undefine
     consolidateSession(db, project, sessionId);
     archiveStaleCandidates(db, project.id);
     clearFileNotes(db, sessionId);
+    pruneDeliveries(db);
   }
 }
 
@@ -469,6 +471,7 @@ export function handleHook(db: DB, input: HookInput): HookOutput {
         const brief = buildProjectContext(db, project, input.source === 'compact' ? 'continue the current task after compaction' : 'continue work on this project', {
           maxTokens: 700,
           sessionId: resumed ? sessionId : undefined,
+          audit: { sessionId },
         });
         context = `${hint}\n\n${brief.text}`;
       } else if (resumed && sessionId) {

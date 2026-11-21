@@ -173,7 +173,7 @@ The file is project knowledge, read by agents like `CLAUDE.md` is, so review cha
 
 ## Usage
 
-A **read** is a memory reaching an agent: included in a brief, opened with `synapse_detail`, or shown as a [file note](agent-integration.md#file-notes). Browsing in `synapse ui` doesn't count. Synapse keeps each memory's total reads and the time of its last read, plus its feedback, and `synapse usage` (or the **Usage** view in `synapse ui`) turns that into what to keep:
+A **read** is a memory reaching an agent: included in a brief (relevant memories that fit its token budget), opened with `synapse_detail`, or shown as a [file note](agent-integration.md#file-notes). Browsing in `synapse ui` doesn't count. Synapse keeps each memory's total reads and the time of its last read, plus its feedback, and `synapse usage` (or the **Usage** view in `synapse ui`) turns that into what to keep:
 
 - **Read often:** curated memories by reads plus two per helpful rating. The ones with at least 3 reads and at least half the top memory's count, or a helpful rating, and no negative one, are suggested for [long-term memory](#reviewed-long-term-memory). Memories in the brief are read every session, so a fixed bar would mark nearly all of them.
 - **Not read in N days:** stored before the window (default 30 days) and not read in it, never-read first. Archive what no longer earns its place, or resolve what stopped being true.
@@ -181,6 +181,23 @@ A **read** is a memory reaching an agent: included in a brief, opened with `syna
 - **Rated wrong:** still active, but rated conflicted, corrected or outdated.
 
 Only the last read's time is kept, so "read often" counts all reads ever, shown with when the last one was. Auto-captured candidates are left out; they have their own lifecycle ([consolidation](#consolidation)).
+
+## What each session was shown
+
+Reads say how often a memory is used; Synapse also records **which session saw which memory, and why**, so "why did the agent do that?" has an answer when a stale or wrong memory misled it.
+
+Every memory (and approved long-term item) that reaches an agent is logged per session:
+
+- **Brief** at session start, or from `synapse_project_context`: the task, and the section each memory was in (relevant, caution, long-term). Only what fit the token budget counts, because the rest never reached the agent. The MCP server's own start brief is logged once the agent has seen it.
+- **Search** (`synapse_search`): the query, and each hit's rank and score. Hits cut by `maxTokens` are not logged.
+- **Detail** (`synapse_detail`): the ids opened.
+- **File note**: the file read or edited.
+
+Each row keeps the title as shown and whether the memory was flagged *changed since stored* at that moment. Viewed later, rows add what happened since: **edited since** (the text changed, not just the status), **rated wrong since** (outdated, conflicted or corrected feedback), **now resolved/archived**, or **deleted**.
+
+- **`synapse audit [session-id]`** prints a session's timeline (default: the latest session); **`synapse audit --memory <id>`** lists the sessions a memory reached. Use it when marking a memory outdated, to see who it may have misled.
+- In **`synapse ui`**, a session's **What it saw and stored** shows the timeline, and each memory's detail panel lists **Shown to**.
+- Queries pass through secret redaction. Rows are kept 90 days and pruned when a session ends; `SYNAPSE_AUDIT_DAYS` changes that, and `0` turns recording off. The CLI and `synapse ui` are people, not agents, so they are not recorded.
 
 ## Retention and relevance
 

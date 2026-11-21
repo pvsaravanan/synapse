@@ -11,6 +11,9 @@ import { openDatabase, type DB } from '../src/db.js';
 import { proposeLongTerm } from '../src/longterm.js';
 import { detectProject } from '../src/project.js';
 import { getObservation, listObservations, recordAccess, storeObservation } from '../src/store.js';
+import { recordDeliveries } from '../src/deliveries.js';
+import { startSession } from '../src/sessions.js';
+import { UI_PAGE } from '../src/ui-page.js';
 import { startUi } from '../src/ui.js';
 
 let db: DB;
@@ -210,4 +213,21 @@ describe('synapse ui server', () => {
     expect((await api('/api/usage')).body.often[0]).toMatchObject({ longTerm: { id: p.id, state: 'proposed' }, promote: false });
     expect((await api('/api/memory/promote', { id: keep.id, kind: 'nope' })).status).toBe(400);
   });
+
+  it('shows what each session was shown, and which sessions saw a memory', async () => {
+    const [mem] = listAll().filter((o) => o.title === 'Rate limit is per API key');
+    const s = startSession(db, project().id, { agent: 'claude-code' });
+    recordDeliveries(db, { projectId: project().id, sessionId: s.id, channel: 'search', query: 'rate limit', items: [{ observationId: mem.id, title: mem.title, revision: '1', rank: 1, score: 0.8 }] });
+    const sessions = (await api('/api/sessions')).body;
+    expect(sessions.find((x: { id: string }) => x.id === s.id)).toMatchObject({ shown: 1 });
+    const detail = (await api('/api/session?id=' + s.id)).body;
+    expect(detail.shown).toEqual([expect.objectContaining({ channel: 'search', query: 'rate limit', items: [expect.objectContaining({ observationId: mem.id, rank: 1, flags: [] })] })]);
+    const m = (await api('/api/memory?id=' + mem.id)).body;
+    expect(m.shownTo).toEqual([expect.objectContaining({ sessionId: s.id, agent: 'claude-code', channel: 'search', query: 'rate limit', rank: 1 })]);
+  });
+});
+
+it('page script parses (the page is a String.raw template)', () => {
+  const script = UI_PAGE.match(/<script>([\s\S]*)<\/script>/)![1];
+  expect(() => new Function(script)).not.toThrow();
 });

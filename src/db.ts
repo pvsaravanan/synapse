@@ -162,6 +162,28 @@ CREATE TABLE IF NOT EXISTS project_identity (
   createdAt TEXT NOT NULL
 );
 
+-- What each session was shown (deliveries.ts): one row per memory or long-term item per brief, search, detail or file note.
+CREATE TABLE IF NOT EXISTS deliveries (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  event         TEXT NOT NULL,
+  sessionId     TEXT,
+  projectId     TEXT NOT NULL,
+  channel       TEXT NOT NULL,
+  query         TEXT,
+  observationId INTEGER,
+  longTermId    INTEGER,
+  title         TEXT NOT NULL,
+  revision      TEXT,
+  rank          INTEGER,
+  score         REAL,
+  section       TEXT,
+  stale         INTEGER NOT NULL DEFAULT 0,
+  createdAt     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_deliveries_session ON deliveries(sessionId, id);
+CREATE INDEX IF NOT EXISTS idx_deliveries_observation ON deliveries(observationId, id);
+CREATE INDEX IF NOT EXISTS idx_deliveries_created ON deliveries(createdAt);
+
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
