@@ -8,7 +8,7 @@
 
 Synapse stores what agents learn about a project: decisions, gotchas, fixes, reasoning, session handoffs and git history. Everything goes into one SQLite file on your machine. Any later session or agent can pick it up through cheap, token-budgeted retrieval.
 
-https://github.com/user-attachments/assets/c80e0b7a-e06e-46f5-8a62-a6e7f4a13d96
+https://github.com/user-attachments/assets/35c2b5b1-f2f1-4de0-947a-becf6f2e5cb7
 
 Full documentation: [docs/](docs/README.md) — [getting started](docs/getting-started.md), [concepts](docs/concepts.md), [MCP tools](docs/mcp-tools.md), [CLI](docs/cli.md), [agent integration](docs/agent-integration.md), [configuration](docs/configuration.md), [architecture](docs/architecture.md).
 
